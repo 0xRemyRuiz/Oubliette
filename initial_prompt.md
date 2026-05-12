@@ -1,0 +1,1 @@
+I am bootstrapping a new Go project. Read CLAUDE.md at the repo root first; it defines the durable rules of this project and the wider architectural context. This is version 0.0.1 — the smallest runnable end-to-end loop that proves process state can be captured on the host and restored inside a running KVM guest, with the process unaware of the move.

@@ -1,0 +1,15 @@
+run:
+  go: "1.22"
+
+linters:
+  enable:
+    - govet
+    - gofmt
+    - errcheck
+    - staticcheck
+    - unused
+    - gocritic
+
+linters-settings:
+  gofmt:
+    simplify: true
