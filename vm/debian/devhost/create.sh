@@ -31,11 +31,11 @@ mkdir -p "${DH_IMAGE_DIR}" "${DH_SEED_DIR}"
 
 # --- Preconditions on L0 ---
 if ! command -v virt-install >/dev/null; then
-  echo "virt-install not found. On Arch: sudo pacman -S virt-install libvirt qemu-full dnsmasq cdrtools" >&2
+  echo "virt-install not found" >&2
   exit 1
 fi
 if ! command -v genisoimage >/dev/null && ! command -v xorriso >/dev/null; then
-  echo "Need genisoimage or xorriso. On Arch: sudo pacman -S cdrtools" >&2
+  echo "Need genisoimage or xorriso" >&2
   exit 1
 fi
 if ! virsh -c qemu:///system uri >/dev/null 2>&1; then
@@ -48,7 +48,7 @@ if [[ ! -d "${DH_SOURCE_DIR}" ]]; then
   echo "Source dir '${DH_SOURCE_DIR}' does not exist. Create it or set FALLTRAP_SRC." >&2
   exit 1
 fi
-if virsh dominfo "${DH_DOMAIN}" >/dev/null 2>&1; then
+if virsh -c qemu:///system dominfo "${DH_DOMAIN}" >/dev/null 2>&1; then
   echo "Domain '${DH_DOMAIN}' already exists. Destroy it first." >&2
   exit 1
 fi
@@ -135,6 +135,15 @@ echo "L1 domain '${DH_DOMAIN}' created and starting."
 # --- Wait for L1 to come up, then provision it from the inside ---
 # start.sh already knows how to wait for a guest IP + SSH; reuse it.
 "$(dirname "$0")/start.sh" >/dev/null
+
+# SSH answers before cloud-init's own package install (openssh-server,
+# git) finishes running in the background. Wait it out, otherwise our
+# apt-get below races cloud-init's apt-get for the dpkg lock.
+echo "Waiting for cloud-init to finish inside L1..."
+if ! "$(dirname "$0")/shell.sh" -- cloud-init status --wait >/dev/null; then
+  echo "cloud-init did not finish cleanly inside L1 '${DH_DOMAIN}'." >&2
+  exit 1
+fi
 
 echo "Running host-setup.sh inside L1 (network request: apt installs)..."
 if ! "$(dirname "$0")/shell.sh" < "$(dirname "$0")/../host-setup.sh"; then

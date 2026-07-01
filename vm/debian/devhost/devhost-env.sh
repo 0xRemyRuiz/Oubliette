@@ -2,6 +2,12 @@
 # Shared config for the L1 devhost VM scripts. Source from each script.
 # Runs under bash; your interactive fish shell doesn't affect these.
 
+if [ -f /root/oubliette_status.txt ]; then
+  echo -e "\033[31mERROR:\033[0m Don't nest devhost into another devhost" >&2
+  exit 1
+fi
+
+
 export DH_DOMAIN="devhost-debian"
 
 export DH_WORKDIR="${HOME}/.local/share/falltrap-devhost"
