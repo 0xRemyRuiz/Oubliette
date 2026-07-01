@@ -1,18 +1,24 @@
 #!/bin/sh
 
 # Debian/Ubuntu host
-sudo apt update
-sudo apt install -y \
+sudo apt-get update -y &&\
+sudo apt-get install -y \
   qemu-system-x86 qemu-utils \
   libvirt-daemon-system libvirt-clients \
   virtinst virt-manager \
   cloud-image-utils \
   criu \
-  genisoimage
+  genisoimage &&\
 
 # Add yourself to the libvirt group so you don't need sudo for virsh
-sudo usermod -aG libvirt "$USER"
+sudo usermod -aG libvirt "$USER" &&\
 # Log out / back in for the group change to take effect
 
 # Sanity: libvirt running?
-systemctl status libvirtd --no-pager
+systemctl status libvirtd --no-pager &&\
+
+echo "SUCCESS: Host is setup and ready to integrate the falltrap" &&\
+exit 0
+
+echo "WARNING: Host base setup failed!"
+exit 1
