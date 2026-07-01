@@ -4,28 +4,16 @@
 # Creates a plain Debian 12 VM (L1) for development, with the project source
 # shared in over 9p.
 #
-# Scope: JUST the L1 VM. It does not install any virtualization stack and
-# does not nest anything. Whatever you run inside L1 is up to you later.
+# Scope: creates the L1 VM, then runs ../host-setup.sh *inside* it once it
+# comes up, so L1 is provisioned (qemu/libvirt/criu via apt, inside the
+# guest) and ready to host the L2 shadow VM. L0 itself is untouched.
 #
-# Runs ../host-setup.sh first to provision L0 (qemu/libvirt/criu via apt).
-# That script does its own network requests (package installs); this
-# script also downloads the Debian cloud image if absent.
+# Contains network requests: downloads the Debian cloud image if absent
+# (on L0), and host-setup.sh does its own apt installs (inside L1).
 # Runs under bash regardless of your interactive shell being fish.
 
 set -euo pipefail
 source "$(dirname "$0")/devhost-env.sh"
-
-# --- Refuse if the domain already exists (before provisioning L0) ---
-if virsh dominfo "${DH_DOMAIN}" >/dev/null 2>&1; then
-  echo "Domain '${DH_DOMAIN}' already exists. Destroy it first." >&2
-  exit 1
-fi
-
-# --- Provision the L0 host (idempotent: apt installs, libvirt group) ---
-# We only reach here when creating from nothing (see guard above), so
-# host-setup.sh runs every time. It aborts (set -e) if setup fails,
-# which stops this script before any VM state is touched.
-"$(dirname "$0")/../host-setup.sh"
 
 # L0 source dir to share into L1. Override via FALLTRAP_SRC.
 DH_SOURCE_DIR="${FALLTRAP_SRC:-${HOME}/projects/falltrap}"
@@ -58,6 +46,10 @@ if ! virsh -c qemu:///system uri >/dev/null 2>&1; then
 fi
 if [[ ! -d "${DH_SOURCE_DIR}" ]]; then
   echo "Source dir '${DH_SOURCE_DIR}' does not exist. Create it or set FALLTRAP_SRC." >&2
+  exit 1
+fi
+if virsh dominfo "${DH_DOMAIN}" >/dev/null 2>&1; then
+  echo "Domain '${DH_DOMAIN}' already exists. Destroy it first." >&2
   exit 1
 fi
 
@@ -126,6 +118,7 @@ virt-install \
   --name "${DH_DOMAIN}" \
   --memory "${DH_RAM_MB}" \
   --vcpus "${DH_VCPUS}" \
+  --cpu host-passthrough \
   --os-variant debian12 \
   --disk path="${DH_DISK}",format=qcow2,bus=virtio \
   --disk path="${SEED_ISO}",device=cdrom \
@@ -138,6 +131,19 @@ virt-install \
 
 echo
 echo "L1 domain '${DH_DOMAIN}' created and starting."
+
+# --- Wait for L1 to come up, then provision it from the inside ---
+# start.sh already knows how to wait for a guest IP + SSH; reuse it.
+"$(dirname "$0")/start.sh" >/dev/null
+
+echo "Running host-setup.sh inside L1 (network request: apt installs)..."
+if ! "$(dirname "$0")/shell.sh" < "$(dirname "$0")/../host-setup.sh"; then
+  echo "host-setup.sh failed inside L1 '${DH_DOMAIN}'." >&2
+  exit 1
+fi
+
+echo
+echo "L1 domain '${DH_DOMAIN}' provisioned and ready."
 echo "Find its IP: virsh -c qemu:///system domifaddr ${DH_DOMAIN}"
 echo "SSH in:      ssh -i ${DH_SSH_KEY} -o StrictHostKeyChecking=no ${DH_SSH_USER}@<ip>"
 echo "Your source is mounted inside L1 at /home/${DH_SSH_USER}/src"

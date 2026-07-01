@@ -102,7 +102,10 @@ migration target.
 Installs QEMU/KVM, libvirt, virt-install, CRIU, and genisoimage via `apt`,
 adds your user to the `libvirt` group, and marks the host as ready so the
 per-VM scripts below can confirm it. **Contains network requests**
-(package installation). Run this once per host.
+(package installation). Run this once per host — for the shadow VM path
+below, which runs directly on L0. `devhost/create.sh` runs this same
+script for you automatically (see next section), just *inside* L1
+instead.
 
 ### devhost — for development
 
@@ -110,8 +113,11 @@ per-VM scripts below can confirm it. **Contains network requests**
 ./vm/debian/devhost/create.sh
 ```
 
-One-time. Contains a network request (fetches the Debian cloud image if
-not already cached). Refuses to run if the domain already exists.
+One-time. Contains network requests: fetches the Debian cloud image if
+not already cached (on L0), then, once the L1 VM boots, pipes
+`../host-setup.sh` into it over SSH and runs it there — so L1 ends up
+with its own qemu/libvirt/criu, ready to host a nested L2 shadow VM.
+Refuses to run if the domain already exists.
 
 Every session:
 
