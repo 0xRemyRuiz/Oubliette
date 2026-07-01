@@ -5,16 +5,19 @@
 set -euo pipefail
 source "$(dirname "$0")/devhost-env.sh"
 
+# --- Ensure the domain is defined ---
 if ! virsh -c "${DH_CONNECT}" dominfo "${DH_DOMAIN}" >/dev/null 2>&1; then
   echo "Domain '${DH_DOMAIN}' not defined. Run the create script first." >&2
   exit 1
 fi
 
+# --- Start if not already running ---
 state="$(virsh -c "${DH_CONNECT}" domstate "${DH_DOMAIN}")"
 if [[ "${state}" != "running" ]]; then
   virsh -c "${DH_CONNECT}" start "${DH_DOMAIN}" >/dev/null
 fi
 
+# --- Wait for a DHCP lease on the default libvirt network ---
 echo "Waiting for guest IP..." >&2
 guest_ip=""
 for _ in $(seq 1 60); do
@@ -23,6 +26,7 @@ for _ in $(seq 1 60); do
   [[ -n "${guest_ip}" ]] && break
   sleep 2
 done
+
 if [[ -z "${guest_ip}" ]]; then
   echo "Timed out waiting for guest IP." >&2
   exit 1

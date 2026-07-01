@@ -10,13 +10,13 @@
 set -euo pipefail
 source "$(dirname "$0")/falltrap-env.sh"
 
-state="$(virsh domstate "${FT_DOMAIN}" 2>/dev/null || echo "missing")"
+state="$(virsh -c "${FT_CONNECT}" domstate "${FT_DOMAIN}" 2>/dev/null || echo missing)"
 if [[ "${state}" != "running" ]]; then
   echo "Domain '${FT_DOMAIN}' is not running (state: ${state})." >&2
   exit 1
 fi
 
-guest_ip="$(virsh -q domifaddr "${FT_DOMAIN}" \
+guest_ip="$(virsh -c "${FT_CONNECT}" -q domifaddr "${FT_DOMAIN}" \
             | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}')"
 if [[ -z "${guest_ip}" ]]; then
   echo "Could not determine guest IP." >&2

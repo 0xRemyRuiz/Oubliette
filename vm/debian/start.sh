@@ -6,22 +6,22 @@ set -euo pipefail
 source "$(dirname "$0")/falltrap-env.sh"
 
 # --- Ensure the domain is defined ---
-if ! virsh dominfo "${FT_DOMAIN}" >/dev/null 2>&1; then
-  echo "Domain '${FT_DOMAIN}' not defined. Run falltrap-vm-create.sh first." >&2
+if ! virsh -c "${FT_CONNECT}" dominfo "${FT_DOMAIN}" >/dev/null 2>&1; then
+  echo "Domain '${FT_DOMAIN}' not defined. Run the create script first." >&2
   exit 1
 fi
 
 # --- Start if not already running ---
-state="$(virsh domstate "${FT_DOMAIN}")"
+state="$(virsh -c "${FT_CONNECT}" domstate "${FT_DOMAIN}")"
 if [[ "${state}" != "running" ]]; then
-  virsh start "${FT_DOMAIN}" >/dev/null
+  virsh -c "${FT_CONNECT}" start "${FT_DOMAIN}" >/dev/null
 fi
 
 # --- Wait for a DHCP lease on the default libvirt network ---
 echo "Waiting for guest IP..." >&2
 guest_ip=""
 for _ in $(seq 1 60); do
-  guest_ip="$(virsh -q domifaddr "${FT_DOMAIN}" \
+  guest_ip="$(virsh -c "${FT_CONNECT}" -q domifaddr "${FT_DOMAIN}" \
               | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}')"
   [[ -n "${guest_ip}" ]] && break
   sleep 2

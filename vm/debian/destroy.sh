@@ -28,21 +28,17 @@ if [[ "${ASSUME_YES}" -eq 0 ]]; then
 fi
 
 # --- Stop the domain if running ---
-state="$(virsh domstate "${FT_DOMAIN}" 2>/dev/null || echo "missing")"
+state="$(virsh -c "${FT_CONNECT}" domstate "${FT_DOMAIN}" 2>/dev/null || echo missing)"
 if [[ "${state}" == "running" ]]; then
   echo "Destroying running domain..."
-  virsh destroy "${FT_DOMAIN}" >/dev/null 2>&1 || true
+  virsh -c "${FT_CONNECT}" destroy "${FT_DOMAIN}" >/dev/null 2>&1 || true
 fi
 
 # --- Undefine the domain ---
-# --nvram covers UEFI/nvram if it was ever added; harmless otherwise.
-# We do NOT pass --remove-all-storage because we manage artifact
-# deletion explicitly below (and want to spare the base image).
-if virsh dominfo "${FT_DOMAIN}" >/dev/null 2>&1; then
-  echo "Undefining domain '${FT_DOMAIN}'..."
-  virsh undefine "${FT_DOMAIN}" --nvram >/dev/null 2>&1 \
-    || virsh undefine "${FT_DOMAIN}" >/dev/null 2>&1 \
-    || true
+if virsh -c "${FT_CONNECT}" dominfo "${FT_DOMAIN}" >/dev/null 2>&1; then
+  echo "Undefining domain..."
+  virsh -c "${FT_CONNECT}" undefine "${FT_DOMAIN}" --nvram >/dev/null 2>&1 \
+    || virsh -c "${FT_CONNECT}" undefine "${FT_DOMAIN}" >/dev/null 2>&1 || true
 else
   echo "Domain '${FT_DOMAIN}' not defined; continuing with artifact cleanup."
 fi

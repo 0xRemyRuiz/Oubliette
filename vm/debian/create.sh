@@ -7,7 +7,7 @@ set -euo pipefail
 source "$(dirname "$0")/falltrap-env.sh"
 
 # --- Refuse if the domain already exists ---
-if virsh -c qemu:///system dominfo "${DH_DOMAIN}" >/dev/null 2>&1; then
+if virsh -c qemu:///system dominfo "${FT_DOMAIN}" >/dev/null 2>&1; then
   echo "Domain '${FT_DOMAIN}' already exists. Destroy it first with $(dirname "$0")/destroy.sh." >&2
   exit 1
 fi
@@ -64,18 +64,19 @@ EOF
 
 SEED_ISO="${FT_SEED_DIR}/seed.iso"
 genisoimage -output "${SEED_ISO}" -volid cidata -joliet -rock \
-  "${FT_SEED_DIR}/user-data" "${FT_SEED_DIR}/meta-data" >/dev/null
+  "${FT_SEED_DIR}/user-data" "${FT_SEED_DIR}/meta-data" >/dev/null 2>&1
 
 # --- Define the domain via virt-install ---
 # --noreboot + --noautoconsole keep this scriptable.
 # --memorybacking source.type=memfd is required for virtiofs.
 # vsock is exposed so we can use it as the PTY/control channel later.
 virt-install \
+  --connect ${FT_CONNECT} \
   --name "${FT_DOMAIN}" \
   --memory "${FT_RAM_MB}" \
   --vcpus "${FT_VCPUS}" \
   --cpu host-passthrough \
-  --os-variant debian12 \
+  --osinfo detect=on,require=off \
   --disk path="${FT_DISK}",format=qcow2,bus=virtio \
   --disk path="${SEED_ISO}",device=cdrom \
   --network network=default,model=virtio \
@@ -90,4 +91,4 @@ virt-install \
 
 echo
 echo "Domain '${FT_DOMAIN}' defined."
-echo "Start it with: $0"
+echo "Start it with: $(dirname "$0")/start.sh"

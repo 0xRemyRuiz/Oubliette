@@ -10,6 +10,7 @@ source "$(dirname "$0")/devhost-env.sh"
 ASSUME_YES=0
 [[ "${1:-}" == "--yes" ]] && ASSUME_YES=1
 
+# --- Confirmation ---
 if [[ "${ASSUME_YES}" -eq 0 ]]; then
   echo "This will undefine '${DH_DOMAIN}' and delete:"
   echo "  - overlay disk: ${DH_DISK}"
@@ -19,12 +20,14 @@ if [[ "${ASSUME_YES}" -eq 0 ]]; then
   case "${reply}" in [yY]|[yY][eE][sS]) ;; *) echo "Aborted."; exit 0 ;; esac
 fi
 
+# --- Stop the domain if running ---
 state="$(virsh -c "${DH_CONNECT}" domstate "${DH_DOMAIN}" 2>/dev/null || echo missing)"
 if [[ "${state}" == "running" ]]; then
   echo "Destroying running domain..."
   virsh -c "${DH_CONNECT}" destroy "${DH_DOMAIN}" >/dev/null 2>&1 || true
 fi
 
+# --- Undefine the domain ---
 if virsh -c "${DH_CONNECT}" dominfo "${DH_DOMAIN}" >/dev/null 2>&1; then
   echo "Undefining domain..."
   virsh -c "${DH_CONNECT}" undefine "${DH_DOMAIN}" --nvram >/dev/null 2>&1 \

@@ -11,6 +11,7 @@ fi
 
 # Name of the libvirt domain. Deterministic so scripts can find it.
 export FT_DOMAIN="falltrap-debian"
+export FT_CONNECT="qemu:///system"
 
 # Where VM artifacts live on the host.
 export FT_WORKDIR="${HOME}/.local/share/falltrap"
@@ -37,3 +38,13 @@ export FT_SSH_USER="falltrap"
 export FT_SSH_KEY="${FT_WORKDIR}/id_ed25519_falltrap"
 
 mkdir -p "${FT_IMAGE_DIR}" "${FT_SEED_DIR}" "${FT_SHARED_DIR}"
+
+# The hypervisor runs qemu as its own unprivileged user (commonly
+# libvirt-qemu), which needs search (x) permission on every directory
+# down to the disk image/ISO paths above -- not just read/write for the
+# owning user. mkdir -p only sets modes on dirs it actually creates, so
+# on hosts where ~/.local or ~/.local/share already existed with a
+# restrictive umask (e.g. 700), that traversal is missing. Grant it
+# explicitly so libvirt doesn't warn about inaccessible disk images.
+chmod o+x "${HOME}/.local" "${HOME}/.local/share" "${FT_WORKDIR}" \
+  "${FT_IMAGE_DIR}" "${FT_SEED_DIR}" "${FT_SHARED_DIR}" 2>/dev/null || true

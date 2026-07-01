@@ -119,7 +119,7 @@ fi
 
 # --- Define + start L1 ---
 virt-install \
-  --connect qemu:///system \
+  --connect ${DH_CONNECT} \
   --name "${DH_DOMAIN}" \
   --memory "${DH_RAM_MB}" \
   --vcpus "${DH_VCPUS}" \
