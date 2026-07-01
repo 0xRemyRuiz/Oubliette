@@ -93,6 +93,11 @@ mounts:
   - [ "${DH_SRC_TAG}", "/home/${DH_SSH_USER}/src", "9p", "trans=virtio,version=9p2000.L,msize=524288,rw,_netdev", "0", "0" ]
 
 runcmd:
+  # The "mounts" cloud-init module runs before "users-groups", so it
+  # mkdir -p's /home/${DH_SSH_USER} (as root) to create the 9p mount
+  # point before the user's home dir exists; useradd then leaves the
+  # home dir itself root-owned since it already exists. Fix it here.
+  - chown ${DH_SSH_USER}:${DH_SSH_USER} /home/${DH_SSH_USER}
   - mkdir -p /home/${DH_SSH_USER}/src
   - chown ${DH_SSH_USER}:${DH_SSH_USER} /home/${DH_SSH_USER}/src
   - mount -a || true
@@ -143,6 +148,11 @@ echo "Waiting for cloud-init to finish inside L1..."
 if ! "$(dirname "$0")/shell.sh" -- cloud-init status --wait >/dev/null; then
   echo "cloud-init did not finish cleanly inside L1 '${DH_DOMAIN}'." >&2
   exit 1
+fi
+
+echo "Running prettifish.sh inside L1 (just a better prompt)..."
+if ! "$(dirname "$0")/shell.sh" < "$(dirname "$0")/prettifish.sh"; then
+  echo "prettifish.sh failed inside L1 '${DH_DOMAIN}'." >&2
 fi
 
 echo "Running host-setup.sh inside L1 (network request: apt installs)..."
