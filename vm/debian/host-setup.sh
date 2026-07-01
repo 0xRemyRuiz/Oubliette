@@ -14,6 +14,7 @@ sudo usermod -aG libvirt "$USER" &&\
 \
 systemctl status libvirtd --no-pager &&\
 \
+echo "install ok" | sudo tee "/root/oubliette_status.txt" &&\
 echo "SUCCESS: Host is setup and ready to integrate the falltrap" &&\
 exit 0
 
