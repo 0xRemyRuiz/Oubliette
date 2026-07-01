@@ -79,6 +79,99 @@ vm:
   remote_criu_path: /usr/sbin/criu
 ```
 
+## Development and testing VMs (`vm/debian/`)
+
+Debian-only for now (the scripts assume `apt`, `virsh`, `virt-install`).
+They manage two independent libvirt domains on your L0 host:
+
+| Domain | Scripts | Role |
+|--------|---------|------|
+| **devhost** (L1) | `vm/debian/devhost/` | A plain Debian dev box for building and running oubliette itself. Project source is shared in over 9p at `~/src`. It does not run CRIU or nested virtualization — it's just somewhere to write and build code on Linux. |
+| **shadow VM** ("falltrap") | `vm/debian/` | The actual migration target used to exercise CRIU dump/restore round-trips. Provisioned with CRIU, a virtiofs shared directory (checkpoint transport), and a vsock device (reserved for a future PTY/control channel). |
+
+You don't need one to use the other, but a full round-trip test typically
+uses devhost to build and drive oubliette, with the shadow VM as the
+migration target.
+
+### First, set up the host machine
+
+```sh
+./vm/debian/host-setup.sh
+```
+
+Installs QEMU/KVM, libvirt, virt-install, CRIU, and genisoimage via `apt`,
+adds your user to the `libvirt` group, and marks the host as ready so the
+per-VM scripts below can confirm it. **Contains network requests**
+(package installation). Run this once per host, before either VM below.
+
+### devhost — for development
+
+```sh
+./vm/debian/devhost/create.sh
+```
+
+One-time. Contains a network request (fetches the Debian cloud image if
+not already cached). Refuses to run if the domain already exists.
+
+Every session:
+
+```sh
+./vm/debian/devhost/start.sh
+./vm/debian/devhost/healthcheck.sh
+./vm/debian/devhost/shell.sh
+```
+
+`start.sh` boots the domain and blocks until SSH answers, printing the
+domain name on stdout (progress goes to stderr) so it can be captured by
+other tooling. `healthcheck.sh` confirms libvirt is reachable, the domain
+is defined, and the `~/src` share is mounted. `shell.sh` drops into an
+interactive shell — pass `-- <cmd>` for a one-off command, or pipe a
+script on stdin.
+
+When done:
+
+```sh
+./vm/debian/devhost/stop.sh
+```
+
+### shadow VM — for CRIU round-trips
+
+```sh
+./vm/debian/host-setup.sh   # if not already done above
+./vm/debian/create.sh       # one-time; network request for the cloud image
+```
+
+Every session:
+
+```sh
+./vm/debian/start.sh          # prints the domain name on stdout
+./vm/debian/healthcheck.sh    # confirms CRIU-ready on both host and guest
+./vm/debian/shell.sh          # drop into the guest to poke around
+```
+
+`healthcheck.sh` checks both sides of the CRIU round-trip: `virsh`,
+`virt-install`, `criu`, and `qemu-img` on the host, plus `libvirtd`
+running and the domain defined; then, if the guest is up, its kernel
+version, `criu check`, the virtiofs shared mount, and the vsock device.
+
+When done:
+
+```sh
+./vm/debian/stop.sh
+```
+
+### Clean rebuilds
+
+Both VMs have a `destroy.sh` for tearing down the domain and its
+per-domain artifacts (overlay disk, cloud-init seed) while keeping the
+downloaded base cloud image and SSH key, so a subsequent `create.sh` is
+cheap:
+
+```sh
+./vm/debian/devhost/destroy.sh [--yes]
+./vm/debian/destroy.sh [--yes]
+```
+
 ## Migration sequence
 
 1. **VM lookup** — `virsh domstate <vm>` confirms the domain is running.
@@ -106,6 +199,11 @@ Integration tests (require CRIU ≥ 3.15 and a running libvirt domain):
 ```sh
 go test -tags integration ./...
 ```
+
+Bring up the shadow VM first (see [Development and testing
+VMs](#development-and-testing-vms-vmdebian) above) and run
+`./vm/debian/healthcheck.sh` to confirm it's CRIU-ready before running
+these.
 
 ## Known limitations (v0.0.1)
 
