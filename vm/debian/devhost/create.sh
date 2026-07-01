@@ -16,7 +16,7 @@ set -euo pipefail
 source "$(dirname "$0")/devhost-env.sh"
 
 # L0 source dir to share into L1. Override via FALLTRAP_SRC.
-DH_SOURCE_DIR="${FALLTRAP_SRC:-${HOME}/projects/falltrap}"
+DH_SOURCE_DIR="${FALLTRAP_SRC:-$(pwd)}"
 
 DH_CLOUD_IMG_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
 DH_DISK_SIZE="20G"
