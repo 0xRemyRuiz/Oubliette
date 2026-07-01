@@ -7,11 +7,25 @@
 # Scope: JUST the L1 VM. It does not install any virtualization stack and
 # does not nest anything. Whatever you run inside L1 is up to you later.
 #
-# Contains one network request: downloads the Debian cloud image if absent.
+# Runs ../host-setup.sh first to provision L0 (qemu/libvirt/criu via apt).
+# That script does its own network requests (package installs); this
+# script also downloads the Debian cloud image if absent.
 # Runs under bash regardless of your interactive shell being fish.
 
 set -euo pipefail
 source "$(dirname "$0")/devhost-env.sh"
+
+# --- Refuse if the domain already exists (before provisioning L0) ---
+if virsh dominfo "${DH_DOMAIN}" >/dev/null 2>&1; then
+  echo "Domain '${DH_DOMAIN}' already exists. Destroy it first." >&2
+  exit 1
+fi
+
+# --- Provision the L0 host (idempotent: apt installs, libvirt group) ---
+# We only reach here when creating from nothing (see guard above), so
+# host-setup.sh runs every time. It aborts (set -e) if setup fails,
+# which stops this script before any VM state is touched.
+"$(dirname "$0")/../host-setup.sh"
 
 # L0 source dir to share into L1. Override via FALLTRAP_SRC.
 DH_SOURCE_DIR="${FALLTRAP_SRC:-${HOME}/projects/falltrap}"
@@ -44,10 +58,6 @@ if ! virsh -c qemu:///system uri >/dev/null 2>&1; then
 fi
 if [[ ! -d "${DH_SOURCE_DIR}" ]]; then
   echo "Source dir '${DH_SOURCE_DIR}' does not exist. Create it or set FALLTRAP_SRC." >&2
-  exit 1
-fi
-if virsh dominfo "${DH_DOMAIN}" >/dev/null 2>&1; then
-  echo "Domain '${DH_DOMAIN}' already exists. Destroy it first." >&2
   exit 1
 fi
 

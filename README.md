@@ -102,7 +102,7 @@ migration target.
 Installs QEMU/KVM, libvirt, virt-install, CRIU, and genisoimage via `apt`,
 adds your user to the `libvirt` group, and marks the host as ready so the
 per-VM scripts below can confirm it. **Contains network requests**
-(package installation). Run this once per host, before either VM below.
+(package installation). Run this once per host.
 
 ### devhost — for development
 
