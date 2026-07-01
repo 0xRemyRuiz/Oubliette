@@ -8,7 +8,7 @@ source "$(dirname "$0")/falltrap-env.sh"
 
 # --- Refuse if the domain already exists ---
 if virsh dominfo "${FT_DOMAIN}" >/dev/null 2>&1; then
-  echo "Domain '${FT_DOMAIN}' already exists. Destroy it first with falltrap-vm-destroy.sh." >&2
+  echo "Domain '${FT_DOMAIN}' already exists. Destroy it first with $(dirname "$0")/destroy.sh." >&2
   exit 1
 fi
 

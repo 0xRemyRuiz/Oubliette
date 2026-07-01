@@ -11,9 +11,7 @@ set -euo pipefail
 source "$(dirname "$0")/falltrap-env.sh"
 
 ASSUME_YES=0
-if [[ "${1:-}" == "--yes" ]]; then
-  ASSUME_YES=1
-fi
+[[ "${1:-}" == "--yes" ]] && ASSUME_YES=1
 
 # --- Confirmation ---
 if [[ "${ASSUME_YES}" -eq 0 ]]; then

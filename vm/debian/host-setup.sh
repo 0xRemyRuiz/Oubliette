@@ -9,14 +9,11 @@ sudo apt-get install -y \
   cloud-image-utils \
   criu \
   genisoimage &&\
-
-# Add yourself to the libvirt group so you don't need sudo for virsh
+\
 sudo usermod -aG libvirt "$USER" &&\
-# Log out / back in for the group change to take effect
-
-# Sanity: libvirt running?
+\
 systemctl status libvirtd --no-pager &&\
-
+\
 echo "SUCCESS: Host is setup and ready to integrate the falltrap" &&\
 exit 0
 
