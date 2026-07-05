@@ -1,0 +1,27 @@
+# criu_path: path to criu binary on the host. Default: "criu" (looked up in
+# $PATH), but Debian only puts /usr/sbin on root's $PATH, not regular users',
+# and the criu package installs there -- so set it explicitly.
+criu_path: /usr/sbin/criu
+
+# local_dump_dir: directory on the host where CRIU writes checkpoint images.
+# Created automatically if it does not exist. Default: /tmp/oubliette-dump.
+local_dump_dir: /tmp/oubliette-dump
+
+vm:
+  # shared_dir_host: host-side path to the virtiofs share root mounted inside
+  # the falltrap-debian guest (FT_SHARED_DIR in vm/debian/falltrap-env.sh).
+  shared_dir_host: /home/falltrap/.local/share/falltrap/shared
+
+  # shared_dir_guest: mount point of that same share inside the guest
+  # (see the fstab entry added in vm/debian/create.sh). Default already
+  # matches this, listed explicitly for clarity.
+  shared_dir_guest: /mnt/falltrap-shared
+
+  # remote_dump_dir: subdirectory name, relative to the shared dir, where
+  # the dump is placed on both sides.
+  remote_dump_dir: oubliette-dump
+
+  # remote_criu_path: path to the criu binary inside the guest. Must be an
+  # absolute path: the preflight check runs `test -x` over the guest agent,
+  # which does not perform a $PATH search on its argument.
+  remote_criu_path: /usr/sbin/criu

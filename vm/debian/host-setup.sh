@@ -8,6 +8,7 @@ sudo apt-get install -y \
   virtinst virt-manager \
   cloud-image-utils \
   criu \
+  rsync \
   genisoimage &&\
 \
 sudo usermod -aG libvirt "$USER" &&\

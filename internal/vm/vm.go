@@ -8,8 +8,10 @@ package vm
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -18,8 +20,9 @@ var (
 	ErrDomainNotFound = fmt.Errorf("domain not found")
 	// ErrDomainNotRunning is returned when the domain exists but is not running.
 	ErrDomainNotRunning = fmt.Errorf("domain not running")
-	// ErrNoIPv4 is returned when virsh domifaddr reports no IPv4 address.
-	ErrNoIPv4 = fmt.Errorf("no IPv4 address found for domain")
+	// ErrNoVsockDevice is returned when the domain has no virtio-vsock device
+	// configured, so it has no AF_VSOCK CID to reach its restore helper on.
+	ErrNoVsockDevice = fmt.Errorf("no vsock device configured")
 )
 
 // Domain represents a libvirt-managed KVM guest identified by its domain name.
@@ -33,14 +36,27 @@ type Domain struct {
 func LookupDomain(ctx context.Context, name string) (*Domain, error) {
 	out, err := virsh(ctx, "domstate", name)
 	if err != nil {
-		outLower := strings.ToLower(out)
-		if strings.Contains(outLower, "failed to get domain") ||
-			strings.Contains(outLower, "domain not found") ||
-			strings.Contains(outLower, "no domain") {
-			return nil, fmt.Errorf("%w: %q", ErrDomainNotFound, name)
-		}
-		return nil, fmt.Errorf("virsh domstate %q: %s: %w", name, strings.TrimSpace(out), err)
+		return nil, classifyDomstateError(name, out, err)
 	}
+	return parseDomstateOutput(name, out)
+}
+
+// classifyDomstateError turns a failed `virsh domstate` invocation's
+// combined output into ErrDomainNotFound when virsh reports the domain does
+// not exist, or a generic wrapped error otherwise.
+func classifyDomstateError(name, out string, err error) error {
+	outLower := strings.ToLower(out)
+	if strings.Contains(outLower, "failed to get domain") ||
+		strings.Contains(outLower, "domain not found") ||
+		strings.Contains(outLower, "no domain") {
+		return fmt.Errorf("%w: %q", ErrDomainNotFound, name)
+	}
+	return fmt.Errorf("virsh domstate %q: %s: %w", name, strings.TrimSpace(out), err)
+}
+
+// parseDomstateOutput turns successful `virsh domstate` output into a
+// Domain, or ErrDomainNotRunning if the domain exists but isn't running.
+func parseDomstateOutput(name, out string) (*Domain, error) {
 	state := strings.TrimSpace(out)
 	if state != "running" {
 		return nil, fmt.Errorf("%w: %q is in state %q", ErrDomainNotRunning, name, state)
@@ -48,40 +64,55 @@ func LookupDomain(ctx context.Context, name string) (*Domain, error) {
 	return &Domain{Name: name}, nil
 }
 
-// PrimaryIPv4 returns the first IPv4 address assigned to any of the domain's
-// network interfaces as reported by virsh domifaddr. It returns ErrNoIPv4 when
-// no IPv4 address is present (e.g. only IPv6, or the guest network is not up yet).
-func (d *Domain) PrimaryIPv4(ctx context.Context) (string, error) {
-	out, err := virsh(ctx, "domifaddr", d.Name)
-	if err != nil {
-		return "", fmt.Errorf("virsh domifaddr %q: %s: %w", d.Name, strings.TrimSpace(out), err)
-	}
-	ip, err := parseFirstIPv4(out)
-	if err != nil {
-		return "", fmt.Errorf("parse domifaddr output for %q: %w", d.Name, err)
-	}
-	return ip, nil
+// domainDevicesXML captures just enough of `virsh dumpxml`'s output to reach
+// the vsock device; encoding/xml ignores every other element in the document.
+type domainDevicesXML struct {
+	Devices struct {
+		Vsock struct {
+			CID struct {
+				Address string `xml:"address,attr"`
+			} `xml:"cid"`
+		} `xml:"vsock"`
+	} `xml:"devices"`
 }
 
-// parseFirstIPv4 parses virsh domifaddr output and returns the first IPv4 address
-// without its prefix length. Expected line format (space-separated):
-//
-//	vnet0  52:54:00:xx:xx:xx  ipv4  192.168.122.10/24
-func parseFirstIPv4(output string) (string, error) {
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 4 && fields[2] == "ipv4" {
-			addr, _, _ := strings.Cut(fields[3], "/")
-			if addr != "" {
-				return addr, nil
-			}
-		}
+// VsockCID returns the AF_VSOCK context ID of the named domain's virtio-vsock
+// device, used to dial its restore helper's control channel. Returns
+// ErrNoVsockDevice if the domain has no vsock device configured at all.
+func VsockCID(ctx context.Context, name string) (uint32, error) {
+	out, err := virsh(ctx, "dumpxml", name)
+	if err != nil {
+		return 0, fmt.Errorf("virsh dumpxml %q: %s: %w", name, strings.TrimSpace(out), err)
 	}
-	return "", ErrNoIPv4
+	return parseVsockCID(out)
 }
+
+// parseVsockCID extracts the vsock CID from `virsh dumpxml` output.
+func parseVsockCID(domainXML string) (uint32, error) {
+	var dom domainDevicesXML
+	if err := xml.Unmarshal([]byte(domainXML), &dom); err != nil {
+		return 0, fmt.Errorf("parse domain xml: %w", err)
+	}
+	addr := dom.Devices.Vsock.CID.Address
+	if addr == "" {
+		return 0, ErrNoVsockDevice
+	}
+	cid, err := strconv.ParseUint(addr, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parse vsock cid %q: %w", addr, err)
+	}
+	return uint32(cid), nil
+}
+
+// libvirtSystemURI is the connection URI for the system-wide libvirtd
+// instance. Domains created by this project's dev scripts (vm/debian/*)
+// are always registered here, not under the per-user qemu:///session
+// instance that virsh falls back to by default for non-root callers.
+const libvirtSystemURI = "qemu:///system"
 
 func virsh(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "virsh", args...)
+	fullArgs := append([]string{"-c", libvirtSystemURI}, args...)
+	cmd := exec.CommandContext(ctx, "virsh", fullArgs...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

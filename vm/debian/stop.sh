@@ -10,18 +10,18 @@ if [[ "${1:-}" == "--force" ]]; then
   FORCE=1
 fi
 
-state="$(virsh domstate "${FT_DOMAIN}" 2>/dev/null || echo "missing")"
+state="$(virsh -c "${FT_CONNECT}" domstate "${FT_DOMAIN}" 2>/dev/null || echo "missing")"
 
 case "${state}" in
   running)
     if [[ "${FORCE}" -eq 1 ]]; then
-      virsh destroy "${FT_DOMAIN}" >/dev/null
+      virsh -c "${FT_CONNECT}" destroy "${FT_DOMAIN}" >/dev/null
       echo "Domain '${FT_DOMAIN}' destroyed (forced)."
     else
-      virsh shutdown "${FT_DOMAIN}" >/dev/null
+      virsh -c "${FT_CONNECT}" shutdown "${FT_DOMAIN}" >/dev/null
       echo -n "Shutting down '${FT_DOMAIN}'"
       for _ in $(seq 1 30); do
-        s="$(virsh domstate "${FT_DOMAIN}")"
+        s="$(virsh -c "${FT_CONNECT}" domstate "${FT_DOMAIN}")"
         [[ "${s}" == "shut off" ]] && { echo " done."; exit 0; }
         echo -n "."
         sleep 1

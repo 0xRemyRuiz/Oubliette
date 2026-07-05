@@ -1,6 +1,6 @@
 // Package criu wraps the criu CLI for process checkpoint and restore operations.
 //
-// Minimum required CRIU version: 3.15 (introduced stable --shell-job and --detach support).
+// Minimum required CRIU version: 3.15 (introduced stable --shell-job and --restore-detached support).
 // CRIU is invoked as a subprocess via os/exec; it is never linked as a library.
 package criu
 
@@ -65,7 +65,7 @@ func (r *Restorer) RestoreDetached(ctx context.Context, dir string) error {
 		"restore",
 		"-D", dir,
 		"--shell-job",
-		"--detach",
+		"--restore-detached",
 		"-v4",
 	}
 	out, err := runSubprocess(ctx, r.CRIUPath, args...)

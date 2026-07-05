@@ -49,12 +49,27 @@ packages:
   - criu
   - iproute2
   - openssh-server
+  - qemu-guest-agent
 
 # Ensure the shared virtiofs mount point exists at first boot.
 runcmd:
   - mkdir -p /mnt/falltrap-shared
   - echo "falltrap-shared /mnt/falltrap-shared virtiofs defaults 0 0" >> /etc/fstab
   - mount -a || true
+  # qemu-guest-agent is udev-activated: its service is started when the
+  # virtio-ports device appears. That device shows up at boot, *before*
+  # cloud-init installs the package here, so the activation event is missed
+  # on this first boot. Later boots are handled by udev; kick it once now so
+  # the agent is reachable without requiring a reboot.
+  - systemctl start qemu-guest-agent
+  # Interactive shells (fish here) keep per-user runtime state -- FIFOs,
+  # sockets -- under XDG_RUNTIME_DIR (/run/user/<uid>). systemd-logind only
+  # creates that directory while the user has a login session, but the restore
+  # helper runs via the guest agent with no session, so criu restore would
+  # fail to recreate those fds ("No such file or directory" under
+  # /run/user/<uid>). Enable lingering so /run/user/<uid> exists at boot,
+  # independent of logins, giving criu a coherent runtime dir to restore into.
+  - loginctl enable-linger ${FT_SSH_USER}
 EOF
 
 cat > "${FT_SEED_DIR}/meta-data" <<EOF
@@ -82,6 +97,7 @@ virt-install \
   --network network=default,model=virtio \
   --graphics none \
   --console pty,target_type=serial \
+  --channel unix,target_type=virtio,name=org.qemu.guest_agent.0 \
   --memorybacking source.type=memfd,access.mode=shared \
   --filesystem "${FT_SHARED_DIR},falltrap-shared,driver.type=virtiofs" \
   --vsock cid.address="${FT_VSOCK_CID}" \

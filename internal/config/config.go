@@ -23,18 +23,22 @@ type Config struct {
 	VM VMConfig `yaml:"vm"`
 }
 
-// VMConfig holds SSH credentials and guest-side CRIU parameters.
+// VMConfig holds the virtiofs share layout and guest-side CRIU parameters
+// used to reach a guest through the QEMU guest agent instead of SSH.
 type VMConfig struct {
-	// SSHUser is the username for SSH connections to the guest. Required.
-	SSHUser string `yaml:"ssh_user"`
-	// SSHKeyPath is the path to the SSH private key. Required.
-	SSHKeyPath string `yaml:"ssh_key_path"`
-	// SSHPort is the guest SSH port. Defaults to 22.
-	SSHPort int `yaml:"ssh_port"`
-	// RemoteDumpDir is the path inside the guest where the dump will be placed.
-	// Defaults to /tmp/oubliette-dump.
+	// SharedDirHost is the host-side path to the virtiofs share root that is
+	// mounted inside the guest (see vm/debian/create.sh). Required.
+	SharedDirHost string `yaml:"shared_dir_host"`
+	// SharedDirGuest is the mount point of that same share inside the guest.
+	// Defaults to /mnt/falltrap-shared.
+	SharedDirGuest string `yaml:"shared_dir_guest"`
+	// RemoteDumpDir is the subdirectory name, relative to the shared dir,
+	// where the dump is placed. Defaults to "oubliette-dump".
 	RemoteDumpDir string `yaml:"remote_dump_dir"`
-	// RemoteCRIUPath is the path to the criu binary inside the guest. Defaults to "criu".
+	// RemoteCRIUPath is the path to the criu binary inside the guest. Must be
+	// absolute: guest-exec's "test -x" check does not perform a $PATH search
+	// on its argument. Defaults to "/usr/sbin/criu" (the Debian package's
+	// install location).
 	RemoteCRIUPath string `yaml:"remote_criu_path"`
 }
 
@@ -63,23 +67,20 @@ func (c *Config) applyDefaults() {
 	if c.LocalDumpDir == "" {
 		c.LocalDumpDir = "/tmp/oubliette-dump"
 	}
-	if c.VM.SSHPort == 0 {
-		c.VM.SSHPort = 22
+	if c.VM.SharedDirGuest == "" {
+		c.VM.SharedDirGuest = "/mnt/falltrap-shared"
 	}
 	if c.VM.RemoteCRIUPath == "" {
-		c.VM.RemoteCRIUPath = "criu"
+		c.VM.RemoteCRIUPath = "/usr/sbin/criu"
 	}
 	if c.VM.RemoteDumpDir == "" {
-		c.VM.RemoteDumpDir = "/tmp/oubliette-dump"
+		c.VM.RemoteDumpDir = "oubliette-dump"
 	}
 }
 
 func (c *Config) validate() error {
-	if c.VM.SSHUser == "" {
-		return fmt.Errorf("%w: vm.ssh_user is required", ErrInvalidConfig)
-	}
-	if c.VM.SSHKeyPath == "" {
-		return fmt.Errorf("%w: vm.ssh_key_path is required", ErrInvalidConfig)
+	if c.VM.SharedDirHost == "" {
+		return fmt.Errorf("%w: vm.shared_dir_host is required", ErrInvalidConfig)
 	}
 	return nil
 }
