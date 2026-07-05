@@ -27,7 +27,7 @@ import (
 	"github.com/oubliette/oubliette/internal/config"
 	"github.com/oubliette/oubliette/internal/criu"
 	"github.com/oubliette/oubliette/internal/preflight"
-	"github.com/oubliette/oubliette/internal/ptybridge"
+	"github.com/oubliette/oubliette/internal/ptymux"
 	"github.com/oubliette/oubliette/internal/qga"
 	"github.com/oubliette/oubliette/internal/transfer"
 	"github.com/oubliette/oubliette/internal/vm"
@@ -50,6 +50,16 @@ const restoreHelperConnectTimeout = 30 * time.Second
 // restoreHelperDialInterval is how often we retry the control-channel
 // connection while the helper is still starting up.
 const restoreHelperDialInterval = 500 * time.Millisecond
+
+// winsizePollInterval is how often the operator's terminal is polled for size
+// changes. oubliette is not in that terminal's foreground process group (it
+// runs from a different terminal), so the kernel never delivers it SIGWINCH;
+// polling TIOCGWINSZ is how an out-of-band bridge notices a resize.
+const winsizePollInterval = 200 * time.Millisecond
+
+// ErrNoControllingTTY is returned when the target process has no pseudo-terminal
+// as its controlling terminal, so there is no session for oubliette to bridge.
+var ErrNoControllingTTY = errors.New("target has no controlling terminal")
 
 // Run migrates the process identified by pid into the libvirt domain vmName.
 // It reads all parameters from cfg and logs progress via slog at INFO level.
@@ -74,6 +84,17 @@ func Run(ctx context.Context, pid int, vmName string, cfg *config.Config) error 
 		return fmt.Errorf("preflight: %w", err)
 	}
 	slog.InfoContext(ctx, "preflight passed")
+
+	// Capture the target's controlling terminal before touching the process.
+	// The migrated session is bridged back onto this same terminal so it
+	// "falls" into the guest in place, rather than being pulled into
+	// oubliette's own terminal. Do this before the dump so a target without a
+	// tty aborts before anything is mutated.
+	ttyPath, err := targetControllingTTY(pid)
+	if err != nil {
+		return fmt.Errorf("locate target terminal: %w", err)
+	}
+	slog.InfoContext(ctx, "target controlling terminal captured", "tty", ttyPath)
 
 	if err := os.MkdirAll(cfg.LocalDumpDir, 0700); err != nil {
 		return fmt.Errorf("create local dump dir: %w", err)
@@ -124,13 +145,22 @@ func Run(ctx context.Context, pid int, vmName string, cfg *config.Config) error 
 		slog.InfoContext(ctx, "source process killed", "pid", pid)
 	}
 
-	term, err := newTerminalConn()
+	term, err := openSessionTTY(ttyPath)
 	if err != nil {
-		return fmt.Errorf("attach local terminal: %w", err)
+		return fmt.Errorf("attach target terminal: %w", err)
 	}
-	slog.InfoContext(ctx, "attached to migrated session; input is now forwarded to the guest")
-	if err := ptybridge.Pump(ctx, term, conn); err != nil {
-		return fmt.Errorf("pty bridge: %w", err)
+	defer term.Close()
+	slog.InfoContext(ctx, "attached to migrated session on target terminal; it is now driven by the guest", "tty", ttyPath)
+
+	// Bridge the target terminal to the guest pty, forwarding data both ways
+	// and window-size changes host->guest.
+	relay := ptymux.NewRelay(term, conn, nil)
+	winCtx, winCancel := context.WithCancel(ctx)
+	go forwardWinsize(winCtx, term, relay)
+	runErr := relay.Run(ctx)
+	winCancel()
+	if runErr != nil {
+		return fmt.Errorf("pty bridge: %w", runErr)
 	}
 
 	slog.InfoContext(ctx, "migration complete", "pid", pid, "vm", vmName)
@@ -192,32 +222,58 @@ func dialHelperWithRetry(ctx context.Context, cid, port uint32) (*vsock.Conn, er
 	}
 }
 
-// terminalConn adapts the operator's own stdin/stdout into a single
-// io.ReadWriteCloser for ptybridge.Pump. Stdin is switched to non-blocking
-// mode and re-wrapped so that Close (triggered when the guest side ends)
-// reliably interrupts a pending Read here too, the same way internal/vsock
-// and internal/restorehelper's pty master already do -- a plain os.Stdin
-// Read cannot otherwise be woken up from another goroutine.
+// targetControllingTTY returns the path of the pseudo-terminal that is the
+// target process's terminal, read from /proc/<pid>/fd/0. It returns
+// ErrNoControllingTTY (wrapped) when fd 0 is not a /dev/pts/* device, since an
+// interactive session to migrate must have one.
+func targetControllingTTY(pid int) (string, error) {
+	link := fmt.Sprintf("/proc/%d/fd/0", pid)
+	target, err := os.Readlink(link)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", link, err)
+	}
+	if !strings.HasPrefix(target, "/dev/pts/") {
+		return "", fmt.Errorf("%w: pid %d fd 0 is %q, not a pseudo-terminal", ErrNoControllingTTY, pid, target)
+	}
+	return target, nil
+}
+
+// sessionTTY wraps the target's controlling terminal as an io.ReadWriteCloser
+// for ptymux.Relay. Opening it with os.OpenFile registers the (pollable) pts
+// with the Go runtime poller in non-blocking mode, so Read/Write/Close compose
+// with the relay's goroutines -- the same property internal/vsock.Conn and the
+// restore helper's pty master rely on.
 //
-// While attached, the controlling terminal is put into raw mode so keystrokes
-// (including Ctrl-C, Tab, arrows) pass through verbatim to the guest shell,
-// which owns all echo and line-editing semantics. The prior terminal state is
-// captured and restored on Close so the operator's shell is left intact when
-// the session ends.
-type terminalConn struct {
-	in       *os.File
-	out      *os.File
-	fd       int
+// The terminal is put into raw mode so keystrokes (Ctrl-C, Tab, arrows) pass
+// through verbatim to the guest shell, which owns all echo and line-editing.
+// The prior mode is captured and restored on Close so the operator's terminal
+// is left intact when the session ends. All ioctls go through SyscallConn's
+// Control so the descriptor is never pulled out of the poller (as File.Fd
+// would do).
+type sessionTTY struct {
+	f        *os.File
 	oldState *unix.Termios
 }
 
-func newTerminalConn() (*terminalConn, error) {
-	fd := int(os.Stdin.Fd())
-	tc := &terminalConn{out: os.Stdout, fd: fd}
+func openSessionTTY(path string) (*sessionTTY, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	st := &sessionTTY{f: f}
 
-	// Enter raw mode when stdin is a real terminal. If it is not (piped input,
-	// tests), TCGETS fails with ENOTTY and we simply skip raw setup.
-	if prev, err := unix.IoctlGetTermios(fd, unix.TCGETS); err == nil {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("syscall conn: %w", err)
+	}
+	var setupErr error
+	if cerr := rc.Control(func(fd uintptr) {
+		prev, gerr := unix.IoctlGetTermios(int(fd), unix.TCGETS)
+		if gerr != nil {
+			setupErr = gerr
+			return
+		}
 		raw := *prev
 		raw.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP |
 			unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
@@ -227,32 +283,90 @@ func newTerminalConn() (*terminalConn, error) {
 		raw.Cflag |= unix.CS8
 		raw.Cc[unix.VMIN] = 1
 		raw.Cc[unix.VTIME] = 0
-		if err := unix.IoctlSetTermios(fd, unix.TCSETS, &raw); err != nil {
-			return nil, fmt.Errorf("set terminal raw mode: %w", err)
+		if serr := unix.IoctlSetTermios(int(fd), unix.TCSETS, &raw); serr != nil {
+			setupErr = serr
+			return
 		}
-		tc.oldState = prev
+		st.oldState = prev
+	}); cerr != nil {
+		f.Close()
+		return nil, fmt.Errorf("control %s: %w", path, cerr)
 	}
-
-	if err := unix.SetNonblock(fd, true); err != nil {
-		tc.restoreTermios()
-		return nil, fmt.Errorf("set stdin nonblocking: %w", err)
+	if setupErr != nil {
+		f.Close()
+		return nil, fmt.Errorf("set raw mode on %s: %w", path, setupErr)
 	}
-	tc.in = os.NewFile(uintptr(fd), "stdin")
-	return tc, nil
+	return st, nil
 }
 
-// restoreTermios puts the controlling terminal back into the mode it had
-// before newTerminalConn switched it to raw. It is idempotent.
-func (t *terminalConn) restoreTermios() {
-	if t.oldState != nil {
-		_ = unix.IoctlSetTermios(t.fd, unix.TCSETS, t.oldState)
-		t.oldState = nil
+// winsize reads the terminal's current window size.
+func (s *sessionTTY) winsize() (rows, cols uint16, err error) {
+	rc, err := s.f.SyscallConn()
+	if err != nil {
+		return 0, 0, err
 	}
+	var ws *unix.Winsize
+	var ioErr error
+	if cerr := rc.Control(func(fd uintptr) {
+		ws, ioErr = unix.IoctlGetWinsize(int(fd), unix.TIOCGWINSZ)
+	}); cerr != nil {
+		return 0, 0, cerr
+	}
+	if ioErr != nil {
+		return 0, 0, ioErr
+	}
+	return ws.Row, ws.Col, nil
 }
 
-func (t *terminalConn) Read(p []byte) (int, error)  { return t.in.Read(p) }
-func (t *terminalConn) Write(p []byte) (int, error) { return t.out.Write(p) }
-func (t *terminalConn) Close() error {
-	t.restoreTermios()
-	return t.in.Close()
+// restoreTermios puts the terminal back into its pre-raw mode. Idempotent.
+func (s *sessionTTY) restoreTermios() {
+	if s.oldState == nil {
+		return
+	}
+	if rc, err := s.f.SyscallConn(); err == nil {
+		_ = rc.Control(func(fd uintptr) {
+			_ = unix.IoctlSetTermios(int(fd), unix.TCSETS, s.oldState)
+		})
+	}
+	s.oldState = nil
+}
+
+func (s *sessionTTY) Read(p []byte) (int, error)  { return s.f.Read(p) }
+func (s *sessionTTY) Write(p []byte) (int, error) { return s.f.Write(p) }
+func (s *sessionTTY) Close() error {
+	s.restoreTermios()
+	return s.f.Close()
+}
+
+// forwardWinsize sends the terminal's size to the guest once, then polls for
+// changes and forwards each new size, until ctx is done or the relay's
+// connection drops. Polling is used because oubliette cannot receive SIGWINCH
+// for a terminal it does not have in its foreground process group.
+func forwardWinsize(ctx context.Context, term *sessionTTY, relay *ptymux.Relay) {
+	var lastRows, lastCols uint16
+	if rows, cols, err := term.winsize(); err == nil {
+		lastRows, lastCols = rows, cols
+		if err := relay.SendWinsize(rows, cols); err != nil {
+			return
+		}
+	}
+	ticker := time.NewTicker(winsizePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			rows, cols, err := term.winsize()
+			if err != nil {
+				return
+			}
+			if rows != lastRows || cols != lastCols {
+				lastRows, lastCols = rows, cols
+				if err := relay.SendWinsize(rows, cols); err != nil {
+					return
+				}
+			}
+		}
+	}
 }

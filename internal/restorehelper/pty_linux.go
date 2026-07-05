@@ -56,13 +56,21 @@ func openPTY() (master, slave *os.File, err error) {
 
 	// A freshly allocated pty reports a 0x0 window size, which makes
 	// line-editing shells (fish) miscompute wrapping and cursor positioning.
-	// Seed a conventional 80x24 default so the restored shell is usable; the
-	// host's actual dimensions are propagated as a later enhancement.
-	ws := &unix.Winsize{Row: 24, Col: 80}
-	if werr := unix.IoctlSetWinsize(int(m.Fd()), unix.TIOCSWINSZ, ws); werr != nil {
+	// Seed a conventional 80x24 default so the restored shell is usable before
+	// the host's first window-size update arrives. Set it via SyscallConn's
+	// Control (not m.Fd()) so the master stays in the runtime poller.
+	var wsErr error
+	if cerr := rc.Control(func(fd uintptr) {
+		wsErr = unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 80})
+	}); cerr != nil {
 		s.Close()
 		m.Close()
-		return nil, nil, fmt.Errorf("set pty window size: %w", werr)
+		return nil, nil, fmt.Errorf("control pty master for window size: %w", cerr)
+	}
+	if wsErr != nil {
+		s.Close()
+		m.Close()
+		return nil, nil, fmt.Errorf("set pty window size: %w", wsErr)
 	}
 
 	return m, s, nil

@@ -1,10 +1,10 @@
-Make sure qemu has the right permissions
-----------------------------------------
+Make sure qemu has the right permissions (WRONG)
+------------------------------------------------
  - setfacl -R -m u:libvirt-qemu:rwx $(pwd)
  - setfacl -R -d -m u:libvirt-qemu:rwx $(pwd)
  - sudo chown $(whoami):$(whoami) -R $(pwd)
 
- At one point my image wasn't loading from the internet anymore so I changed it and complained about it to claude. It did some serious checking tasks, again and again, said to me I got the wrong config and changed it. I've got another problem about having the rights to build the oubliette command from the L1 vm. It did a lot of half useful checking tasks to final tell me "hm, it's an ACL problem obviously" and proposed me to setup ACLs. It worked but now I was having trouble getting qemu to enlist my L2 vm to the network. It worked again heavily to produce fixes on fixes without the situation improving at all. It was starting to spiral to infinity. 50k tokens later, turns out the best fix was to build my command a folder above and voila ! Think with the AI, don't make it think for you...
+At one point my image wasn't loading from the internet anymore so I changed it and complained about it to claude. It did some serious checking tasks, again and again, said to me I got the wrong config and changed it. I've got another problem about having the rights to build the oubliette command from the L1 vm. It did a lot of half useful checking tasks to final tell me "hm, it's an ACL problem obviously" and proposed me to setup ACLs. It worked but now I was having trouble getting qemu to enlist my L2 vm to the network. It worked again heavily to produce fixes on fixes without the situation improving at all. It was starting to spiral to infinity. 50k tokens later, turns out the best fix was to build my command a folder above and voila ! Think with the AI, don't make it think for you...
 
 Profile of the machine
 ----------------------

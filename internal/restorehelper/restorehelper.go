@@ -20,7 +20,9 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/oubliette/oubliette/internal/ptybridge"
+	"golang.org/x/sys/unix"
+
+	"github.com/oubliette/oubliette/internal/ptymux"
 	"github.com/oubliette/oubliette/internal/vsock"
 )
 
@@ -74,7 +76,19 @@ func Run(ctx context.Context, cfg Config) error {
 	defer conn.Close()
 
 	slog.InfoContext(ctx, "bridging pty to control channel")
-	return ptybridge.Pump(ctx, master, conn)
+	// Apply host-sent window-size updates to the pty master. Go through
+	// SyscallConn's Control rather than master.Fd() so the descriptor stays
+	// registered with the runtime poller that the relay's reads depend on.
+	relay := ptymux.NewRelay(master, conn, func(rows, cols uint16) {
+		rc, err := master.SyscallConn()
+		if err != nil {
+			return
+		}
+		_ = rc.Control(func(fd uintptr) {
+			_ = unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, &unix.Winsize{Row: rows, Col: cols})
+		})
+	})
+	return relay.Run(ctx)
 }
 
 // criuRestoreCmd builds the criu restore invocation, attached to slave as
