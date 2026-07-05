@@ -215,7 +215,7 @@ these.
  1. Start the devhost machine : `./vm/debian/devhost/create.sh && ./vm/debian/devhost/start.sh`
  2. Start the guest machine : `./vm/debian/devhost/shell.sh -- ./src/vm/debian/create.sh && ./src/vm/debian/start.sh`
  3. Run process A in terminal A : `./vm/debian/devhost/shell.sh`
- 4. From terminal A build oubliette : `./build.sh`
+ 4. From terminal A build oubliette : `cd src && ./build.sh`
  5. From terminal A ensure fifo is ok : `./src/vm/debian/shell.sh -- 'sudo -u falltrap sh -c "rm -f /run/user/1000/fish_universal_variables.notifier; mkfifo -m 600 /run/user/1000/fish_universal_variables.notifier"'`
  6. Run process B in terminal B : `./vm/debian/devhost/shell.sh`
  7. From terminal B Get pid process B : `echo $fish_pid`
