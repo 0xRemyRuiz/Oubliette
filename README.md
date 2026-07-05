@@ -213,9 +213,29 @@ these.
 
 ## Known limitations (v0.0.1)
 
-- No PTY/terminal handoff. The restored process's stdio is detached inside the
-  guest; interactive shells need manual PTY re-attachment after migration.
-- Paths passed via config must not contain spaces or shell metacharacters.
-- Network connections open at dump time are not re-established in the guest
+ - Paths passed via config must not contain spaces or shell metacharacters.
+ - Network connections open at dump time are not re-established in the guest
   (CRIU can restore TCP connections but this is not yet wired up).
-- Only the first IPv4 address from `virsh domifaddr` is used.
+ - Only the first IPv4 address from `virsh domifaddr` is used.
+
+
+## Flow to test the process
+### Base common setup
+ 1. Start the devhost machine : `./vm/debian/devhost/create.sh && ./vm/debian/devhost/start.sh`
+ 2. Start the guest machine : `./vm/debian/devhost/shell.sh -- ./src/vm/debian/create.sh && ./src/vm/debian/start.sh`
+ 3. Run process A in terminal A : `./vm/debian/devhost/shell.sh`
+### Simple flow with in-band one word test scanner
+ 4. From terminal A build and run oubliette : `cd src && ./build.sh && sudo ../oubliette serve --listen :2222 --shell /bin/bash --trigger whoami`
+ 5. Run process B in terminal B : `./vm/debian/devhost/shell.sh`
+ 6. From terminal B start the command line : `nc localhost 2222`
+ 7. From terminal B check we are in host : `ls oubliette_status.txt`
+ 8. From terminal B just run `whoami`
+ 9. From terminal B check we are now in guest : `ls oubliette_status.txt`
+### Flow adding external trigger for the falltrap mechanism
+ 4. From terminal A build and run oubliette : `cd src && ./build.sh && sudo ../oubliette serve --listen :2222 --shell /bin/bash --trigger __never__`
+ 5. Run process B in terminal B : `./vm/debian/devhost/shell.sh`
+ 6. Run process C in terminal C : `./vm/debian/devhost/shell.sh`
+ 6. From terminal B start the command line : `nc localhost 2222`
+ 7. From terminal B check we are in host : `ls oubliette_status.txt`
+ 7. From terminal C trigger the falltrap : `echo '{"action":"contain","match":{"remote_ip":"::1","remote_port":[TARGET_PORT]}}' | sudo socat - UNIX-CONNECT:/run/oubliette.sock`
+ 7. From terminal B check we are in host : `ls oubliette_status.txt`

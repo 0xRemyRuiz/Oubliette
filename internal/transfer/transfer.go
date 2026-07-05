@@ -23,6 +23,13 @@ func CopyDump(localDir, destDir string) error {
 	if _, err := os.Stat(localDir); err != nil {
 		return fmt.Errorf("stat local dump dir %q: %w", localDir, err)
 	}
+	// Clear the destination so it becomes an exact mirror of this dump. A
+	// leftover image from a previous migration (e.g. a stale remap or ghost
+	// file this dump does not produce) would otherwise be read by criu restore
+	// and corrupt it.
+	if err := os.RemoveAll(destDir); err != nil {
+		return fmt.Errorf("clear shared dump dir %q: %w", destDir, err)
+	}
 	if err := os.MkdirAll(destDir, 0700); err != nil {
 		return fmt.Errorf("create shared dump dir %q: %w", destDir, err)
 	}

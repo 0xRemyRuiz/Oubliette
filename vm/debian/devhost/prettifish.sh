@@ -7,6 +7,9 @@ U="${1:-$(whoami)}"
 sudo apt-get update -y
 sudo apt-get install -y fish
 
+# add rlwrap to have a good time with remote shell using netcat
+sudo apt-get install -y rlwrap
+
 D="/home/$U/.config/fish"
 sudo -u "$U" mkdir -p "$D"
 sudo -u "$U" tee "$D/config.fish" >/dev/null <<'EOF'

@@ -22,6 +22,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/oubliette/oubliette/internal/pty"
 	"github.com/oubliette/oubliette/internal/ptymux"
 	"github.com/oubliette/oubliette/internal/vsock"
 )
@@ -42,7 +43,7 @@ type Config struct {
 // AF_VSOCK connection on cfg.VsockPort until the restored process exits or
 // the connection drops.
 func Run(ctx context.Context, cfg Config) error {
-	master, slave, err := openPTY()
+	master, slave, err := pty.Open()
 	if err != nil {
 		return fmt.Errorf("open pty: %w", err)
 	}

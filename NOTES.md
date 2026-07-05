@@ -35,6 +35,66 @@ Files: internal/migrate/migrate.go (capture tty, open pts, poll loop, use Relay)
 One trade-off to flag: I'm folding winsize into the existing connection via light framing (every pty byte now passes through frame encode/decode). The alternative is a second vsock control connection that leaves tched and carries only fixed 4-byte winsize messages. The framedapproach is cleaner (one connection, no dual-teardown edge cases); the two-connection approach is lower-risk to the data path that just started working. I
 lean framed and will cover it with tests — but say the word ifath raw.
 
+After admiting the base scenario will not hold up
+-------------------------------------------------
+Suricata doesn't seem to trigger nicely, it seems at best a bit random, let's put it aside. Coming back to the linpeas script. You promised me seamless continuation mid script falltrap mechanism! You assured me it could be possible and now you confirm this isn't? I thought CRIU could do that and you switched to some proxy/broker strategy which would probably never been compatible with our base goal. Find a solution and then we'll get back to suricata.
+
+You're right to call this out, and I owe you a straight answer. I was inconsistent: I told you the linPEAS scenario was sound, then in "problem 2" I got defeatist and declared mid-run migration "fragile/hard" — that was me over-reacting to a test failure, not a real limitation. Let me correct the record honestly.
+
+The technical truth
+
+- CRIU absolutely can checkpoint and restore a running process tree — a shell plus a live linPEAS plus its find/grep children, pipes and all. That's CRIU's core competency, not an edge it can't handle. When we migrate --pid <shell>, the dumper already checkpoints the whole subtree — linPEAS included.
+- The broker did not replace CRIU or compromise the goal. The broker only owns the client connection so it survives the swap. The actual migration underneath is the same CRIU tree checkpoint/restore. They're orthogonal — the broker can't and doesn't prevent mid-run tree migration.
+- Why it "died" in our tests is coherence, not impossibility. When a shell is running linpeas.sh, it holds the script file open — so restore needs /root/linpeas.sh present in the guest at the same path. It isn't there → restore fails → the tree dies. That's the exact same class of problem we already beat for fish (binary, locale, FIFO): fix the coherence gap and it works. I conflated "our guest wasn't coherent yet" with "CRIU can't do this." My mistake.
+
+So: seamless mid-run continuation is the goal, it's achievable, and the path is the coherence loop we already know — applied to the linPEAS tree.
+
+The plan, isolated from broker/Suricata noise
+
+Let's prove the core directly with migrate --pid (no broker, no Suricata), then the broker just re-bridges on top. Step one is staging the script so it's coherent:
+
+● Write(vm/debian/stage-linpeas.sh)
+Wrote 34 lines to vm/debian/stage-linpeas.sh
+#!/usr/bin/env bash
+#- Stage tests/linpeas.sh at an identical path on both this host and the shadow
+#- VM, so a shell running it can be migrated mid-run.
+#-
+#- Why: a shell executing a script keeps the script file open and reads commands
+#- from it. CRIU dumps that open fd; restore reopens it at the same path in the
+#- guest. If the script is not present there, restore fails and the migrated
+#- tree dies. Staging it on both sides closes that coherence gap.
+#-
+#- Target path is /root/linpeas.sh, matching a root shell whose cwd is /root
+… +24 lines
+
+  Ran 1 shell command
+
+Now the isolated core test — migrate --pid on a shell running linPEAS, no broker/Suricata in the way:
+
+1. Stage the script both sides:
+! sudo ./vm/debian/stage-linpeas.sh
+
+2. Terminal A — run linPEAS in a root shell (C locale, so no locale-mmap coherence issue for the whole tree):
+sudo env LC_ALL=C HOME=/root bash
+then inside that shell:
+echo $$        # note this PID — the shell to migrate
+cd /root
+./linpeas.sh
+Let it stream for a few seconds (early = fewer children = smallest coherence surface for the first attempt).
+
+3. Terminal B — migrate it mid-run:
+sudo ../oubliette migrate --pid <PID_from_step_2> --vm falltrap-debian
+
+What success looks like: Terminal A's shell dies; Terminal B shows linPEAS continuing its output — now enumerating the guest. That's the seamless mid-run continuation, proven on the core engine.
+
+When it fails (likely, first try — same as fish did), grab the guest reason:
+! cat /home/falltrap/.local/share/falltrap/shared/oubliette-dump/restore.log | tail -30
+and paste it. We fix each coherence gap exactly like we did for fish — binary, locale, FIFO were three rounds; the linPEAS tree may add a couple (a temp file a child holds, a fd to something not mirrored). Each one is a specific, nameable fix, not a wall.
+
+Honest expectation-setting so I don't over-promise again: I'm confident this is achievable because it's the same coherence loop, but I can't promise it's one round — a tree of dozens of processes has more surface than a single fish. What I can promise: every failure will name a concrete file/fd in restore.log, and each is fixable. If we hit something genuinely CRIU-can't-do (e.g. a child wedged in uninterruptible I/O at dump time), I'll tell you plainly rather than hand-wave.
+
+Run steps 1–3 and send me the restore.log tail from the first failure. Let's grind the coherence down until linPEAS falls through the trapdoor mid-run.
+
 Base for prez
 -------------
 I need a sobre presentation like a technical talk, something like in DEFCON talks or other tech talks. I will be presenting a research project using agentic working. My research project is some sort of a falltrap mechanism in linux. It is not to replace honyepot but to complement those.
