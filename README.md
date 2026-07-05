@@ -211,11 +211,17 @@ VMs](#development-and-testing-vms-vmdebian) above) and run
 `./vm/debian/healthcheck.sh` to confirm it's CRIU-ready before running
 these.
 
-## Known limitations (v0.0.1)
-
-- No PTY/terminal handoff. The restored process's stdio is detached inside the
-  guest; interactive shells need manual PTY re-attachment after migration.
-- Paths passed via config must not contain spaces or shell metacharacters.
-- Network connections open at dump time are not re-established in the guest
-  (CRIU can restore TCP connections but this is not yet wired up).
-- Only the first IPv4 address from `virsh domifaddr` is used.
+## Experimental branch flow
+ 1. Start the devhost machine : `./vm/debian/devhost/create.sh && ./vm/debian/devhost/start.sh`
+ 2. Start the guest machine : `./vm/debian/devhost/shell.sh -- ./src/vm/debian/create.sh && ./src/vm/debian/start.sh`
+ 3. Build oubliette : `./build.sh`
+ 4. Run process A in terminal A : `./vm/debian/devhost/shell.sh`
+ 5. From terminal A ensure fifo is ok : `./src/vm/debian/shell.sh -- 'sudo -u falltrap sh -c "rm -f /run/user/1000/fish_universal_variables.notifier; mkfifo -m 600 /run/user/1000/fish_universal_variables.notifier"'`
+ 6. Run process B in terminal B : `./vm/debian/devhost/shell.sh`
+ 7. From terminal B Get pid process B : `echo $fish_pid`
+ 8. From terminal A ensure we are in a host vm : `sudo cat /root/oubliette_status.txt`
+ 9. From terminal A sync and steal process : `./vm/debian/sync-session.sh && sudo ../oubliette --pid [PID_TO_STEAL]`
+  - Terminal B should be killed quickly
+ 10. From terminal A : press enter
+ 11. From terminal A ensure we are in a guest vm : `sudo cat /root/oubliette_status.txt`
+In the end we know we have successful stolen process and we are inside of a guest vm because `/root/oubliette_status.txt` does not exist. Whereas it has "installation ok" in a host (devhost or real host).
