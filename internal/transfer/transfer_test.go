@@ -1,58 +1,142 @@
 package transfer
 
 import (
-	"context"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
-// TestRunCommand_connectionRefused verifies that RunCommand surfaces an error
-// when SSH cannot connect. Port 1 is reserved and will be refused on loopback.
-func TestRunCommand_connectionRefused(t *testing.T) {
-	xfr := &SSHTransfer{
-		Host:    "127.0.0.1",
-		User:    "nobody",
-		KeyPath: "/nonexistent/key",
-		Port:    1,
+func TestCopyDump_copiesFiles(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "core-1.img"), []byte("checkpoint data"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	err := xfr.RunCommand(context.Background(), "true")
+	if err := os.Mkdir(filepath.Join(src, "sub"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "sub", "nested.img"), []byte("nested"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "shared", "oubliette-dump")
+	if err := CopyDump(src, dest); err != nil {
+		t.Fatalf("CopyDump: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dest, "core-1.img"))
+	if err != nil {
+		t.Fatalf("read copied file: %v", err)
+	}
+	if string(got) != "checkpoint data" {
+		t.Errorf("core-1.img: got %q, want %q", got, "checkpoint data")
+	}
+
+	gotNested, err := os.ReadFile(filepath.Join(dest, "sub", "nested.img"))
+	if err != nil {
+		t.Fatalf("read copied nested file: %v", err)
+	}
+	if string(gotNested) != "nested" {
+		t.Errorf("sub/nested.img: got %q, want %q", gotNested, "nested")
+	}
+}
+
+func TestCopyDump_missingSource(t *testing.T) {
+	dest := t.TempDir()
+	err := CopyDump("/nonexistent/dump/dir", dest)
 	if err == nil {
-		t.Fatal("expected error for refused connection, got nil")
+		t.Fatal("expected error for missing source dir, got nil")
 	}
 }
 
-func TestSSHBaseArgs_structure(t *testing.T) {
-	xfr := &SSHTransfer{
-		Host:    "10.0.0.1",
-		User:    "root",
-		KeyPath: "/root/.ssh/id_ed25519",
-		Port:    2222,
+func TestCopyDump_createsDestTree(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	args := xfr.sshBaseArgs()
-
-	wantDest := "root@10.0.0.1"
-	if len(args) == 0 || args[len(args)-1] != wantDest {
-		t.Errorf("last arg: got %q, want %q", args[len(args)-1], wantDest)
+	dest := filepath.Join(t.TempDir(), "a", "b", "c")
+	if err := CopyDump(src, dest); err != nil {
+		t.Fatalf("CopyDump: %v", err)
 	}
-
-	portIdx := -1
-	for i, a := range args {
-		if a == "-p" && i+1 < len(args) {
-			portIdx = i + 1
-			break
-		}
-	}
-	if portIdx == -1 || args[portIdx] != "2222" {
-		t.Errorf("-p value: want %q in args %v", "2222", args)
+	if _, err := os.Stat(filepath.Join(dest, "f")); err != nil {
+		t.Errorf("expected destination tree to be created: %v", err)
 	}
 }
 
-func TestSCPBaseArgs_usesUpperP(t *testing.T) {
-	xfr := &SSHTransfer{Port: 2222}
-	args := xfr.scpBaseArgs()
-	for i, a := range args {
-		if a == "-P" && i+1 < len(args) && args[i+1] == "2222" {
-			return
-		}
+func TestStageHelper_copiesNewBinary(t *testing.T) {
+	local := filepath.Join(t.TempDir(), "oubliette-restorehelper")
+	if err := os.WriteFile(local, []byte("binary contents v1"), 0755); err != nil {
+		t.Fatal(err)
 	}
-	t.Errorf("expected -P 2222 in scp args: %v", args)
+	destDir := filepath.Join(t.TempDir(), "shared")
+
+	if err := StageHelper(local, destDir); err != nil {
+		t.Fatalf("StageHelper: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "oubliette-restorehelper"))
+	if err != nil {
+		t.Fatalf("read staged helper: %v", err)
+	}
+	if string(got) != "binary contents v1" {
+		t.Errorf("staged helper: got %q, want %q", got, "binary contents v1")
+	}
+}
+
+func TestStageHelper_skipsIdenticalBinary(t *testing.T) {
+	local := filepath.Join(t.TempDir(), "oubliette-restorehelper")
+	if err := os.WriteFile(local, []byte("binary contents v1"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	destDir := t.TempDir()
+	destPath := filepath.Join(destDir, "oubliette-restorehelper")
+	if err := os.WriteFile(destPath, []byte("binary contents v1"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(destPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := StageHelper(local, destDir); err != nil {
+		t.Fatalf("StageHelper: %v", err)
+	}
+
+	after, err := os.Stat(destPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Error("expected identical staged binary to be left untouched (mtime changed), but StageHelper recopied it")
+	}
+}
+
+func TestStageHelper_recopiesChangedBinary(t *testing.T) {
+	local := filepath.Join(t.TempDir(), "oubliette-restorehelper")
+	if err := os.WriteFile(local, []byte("binary contents v2"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	destDir := t.TempDir()
+	destPath := filepath.Join(destDir, "oubliette-restorehelper")
+	if err := os.WriteFile(destPath, []byte("stale contents"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := StageHelper(local, destDir); err != nil {
+		t.Fatalf("StageHelper: %v", err)
+	}
+
+	got, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "binary contents v2" {
+		t.Errorf("staged helper: got %q, want %q", got, "binary contents v2")
+	}
+}
+
+func TestStageHelper_missingSource(t *testing.T) {
+	err := StageHelper("/nonexistent/oubliette-restorehelper", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for missing source binary, got nil")
+	}
 }

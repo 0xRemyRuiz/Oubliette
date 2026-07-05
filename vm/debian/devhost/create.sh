@@ -155,6 +155,11 @@ if ! "$(dirname "$0")/shell.sh" < "$(dirname "$0")/prettifish.sh"; then
   echo "prettifish.sh failed inside L1 '${DH_DOMAIN}'." >&2
 fi
 
+echo "Running installation of golang inside L1..."
+if ! "$(dirname "$0")/shell.sh" < "$(dirname "$0")/install-go.sh"; then
+  echo "install-go.sh failed inside L1 '${DH_DOMAIN}'." >&2
+fi
+
 echo "Running host-setup.sh inside L1 (network request: apt installs)..."
 if ! "$(dirname "$0")/shell.sh" < "$(dirname "$0")/../host-setup.sh"; then
   echo "host-setup.sh failed inside L1 '${DH_DOMAIN}'." >&2

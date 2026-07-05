@@ -20,11 +20,10 @@ func TestRun_domainNotFound(t *testing.T) {
 		CRIUPath:     "criu",
 		LocalDumpDir: t.TempDir(),
 		VM: config.VMConfig{
-			SSHUser:        "root",
-			SSHKeyPath:     "/root/.ssh/id_rsa",
-			SSHPort:        22,
+			SharedDirHost:  t.TempDir(),
+			SharedDirGuest: "/mnt/falltrap-shared",
 			RemoteCRIUPath: "criu",
-			RemoteDumpDir:  "/tmp/oubliette-test",
+			RemoteDumpDir:  "oubliette-test",
 		},
 	}
 	err := migrate.Run(context.Background(), os.Getpid(), "oubliette-no-such-domain-xyz", cfg)

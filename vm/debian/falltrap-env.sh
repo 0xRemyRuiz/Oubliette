@@ -2,8 +2,7 @@
 # Shared environment for falltrap research VM scripts.
 # Source this from every other script: `source ./falltrap-env.sh`
 
-echo "Checking system compatibility..."
-sudo cat /root/oubliette_status.txt | grep "install ok"
+sudo cat /root/oubliette_status.txt | grep "install ok" 2>&1 >/dev/null
 if [[ $? -ne 0 ]]; then
   echo -e "\033[31mERROR:\033[0m System is not compatible" >&2
   exit 1
