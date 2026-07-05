@@ -15,6 +15,26 @@ Notions to look about
  - login linger
  - 9p (this is the shared mechanism used to sync data from host with devhost)
 
+Plan to switch from stealing the process to seemless falling generated
+----------------------------------------------------------------------
+ 1. Capture the target's terminal before touching it (internal/migrate)
+	- targetTTY(pid) (string, error): readlink /proc/<pid>/fd/0, require it matches /dev/pts/*. If not → abort with a clear error ("target PID has no controlling terminal; oubliette migrates interactive tty sessions"). Runs in preflight, before the dump, so we fail early.
+ 2. Bridge to the target's pts, not oubliette's stdin/stdout (internal/migrate)
+	- Replace terminalConn (which wraps os.Stdin/os.Stdout) with one that opens the captured /dev/pts/N (O_RDWR|O_NOCTTY), saves its termios, sets raw, and restores on close. The raw-mode logic I just added moves over almost verbatim. oubliette's own terminal (B) keeps showing logs; the live session lands back in terminal A.
+ 3. Live resize — with an important wrinkle
+	- oubliette is not in terminal A's foreground process group (it runs in terminal B), so the kernel will not send it SIGWINCH when the user resizes terminal A. So instead of a signal handler, a goroutine polls TIOCGWINSZ on the target pts (~200 ms) and forwards the size only when it changes. Initial size is sent immediately on attach. Slight latency, but robust and correct for an out-of-band observer.
+4. Multiplex data + winsize over the one vsock (new internal/ptymux, replaces internal/ptybridge)
+	- A tiny framed protocol: [1 byte type][2 byte len][payload], types DATA and WINSIZE (payload = rows,cols as two uint16).
+	- Relay{ local, conn io.ReadWriteCloser; onWinsize func(rows,cols uint16) } with Run(ctx) error and SendWinsize(rows,cols) error (conn writes mutex-guarded). One symmetric type serves both ends:
+	  - Host: onWinsize=nil (never receives), calls SendWinsize from the poll loop.
+	  - Guest helper: onWinsize= apply TIOCSWINSZ to the pty master; never sends.
+	- Helper keeps the 80×24 seed as the pre-first-frame default; the host's initial WINSIZE corrects it immediately.
+
+Files: internal/migrate/migrate.go (capture tty, open pts, poll loop, use Relay), internal/restorehelper/restorehelper.go (use Relay with a winsize handler), new internal/ptymux/{ptymux.go,ptymux_test.go}, remove internal/ptybridge/. Both binaries rebuilt.
+
+One trade-off to flag: I'm folding winsize into the existing connection via light framing (every pty byte now passes through frame encode/decode). The alternative is a second vsock control connection that leaves tched and carries only fixed 4-byte winsize messages. The framedapproach is cleaner (one connection, no dual-teardown edge cases); the two-connection approach is lower-risk to the data path that just started working. I
+lean framed and will cover it with tests — but say the word ifath raw.
+
 Base for prez
 -------------
 I need a sobre presentation like a technical talk, something like in DEFCON talks or other tech talks. I will be presenting a research project using agentic working. My research project is some sort of a falltrap mechanism in linux. It is not to replace honyepot but to complement those.
