@@ -11,13 +11,13 @@
 Oubliette is a Linux deception system that transparently migrates an intruder's
 live terminal session from a real host machine into an isolated shadow virtual
 machine (KVM). The intruder continues typing into the same session; the
-execution context is silently relocated beneath them. From their perspective,
-nothing changed — the shell responds, commands run, the filesystem is there.
+execution context is silently relocated beneath them. From their perspective
+nothing changed, the shell responds, commands run, the filesystem is there.
 In reality, they are no longer on the protected machine.
 
 The name is taken from the medieval *oubliette*: a dungeon accessible only
 through a trapdoor in the ceiling, from the French *oublier*, "to forget." A
-prisoner was dropped in and forgotten. The metaphor is precise — the intruder's
+prisoner was dropped in and forgotten. The metaphor is precise, the intruder's
 session is dropped into a lower space and the real system ceases to know they
 were ever there.
 
@@ -29,11 +29,11 @@ Conventional deception tools attempt to lure attackers into an obviously
 synthetic environment up front, but a capable adversary detects the artifice
 quickly and disengages.
 
-Oubliette inverts the sequence. The attacker lands on what is — or convincingly
-appears to be — a genuine system, and is then relocated *out from under their
-own feet* into a controlled environment, without a perceptible transition. The
-defensive value is twofold: the attacker's real access is curtailed, and their
-subsequent behaviour can be observed inside a contained space.
+Oubliette inverts the sequence. The attacker lands on what is a genuine system,
+and is then relocated *out from under their own feet* into a controlled
+environment, without a perceptible transition. The defensive value is twofold:
+the attacker's real access is curtailed, and their subsequent behaviour can be
+observed inside a contained space.
 
 ### Design goal
 
@@ -185,13 +185,13 @@ domain of mature behavioural analysis and endpoint detection and response
 tooling, which can bring far richer signals to the decision of *when* to spring
 the trap. Rather than competing, a strong detection layer can serve as
 Oubliette's trigger, and Oubliette can serve as an active *response* to that
-detection — moving the intruder rather than merely alerting on them. Detection
+detection, moving the intruder rather than merely alerting on them. Detection
 tools decide; Oubliette acts.
 
 ### With honeytokens and canary files
 
-Honeytokens — deliberately planted credentials or files that alert when touched
-— address Oubliette's first risk (action before the trap) and its third (telling
+Honeytokens (deliberately planted credentials or files that alert when touched)
+address Oubliette's first risk (action before the trap) and its third (telling
 attackers from legitimate users). A honeytoken accessed inside the pre-migration
 window is a high-confidence signal of malicious intent, and can itself be the
 trigger that fires the migration. Placed inside the shadow VM, honeytokens
@@ -199,7 +199,7 @@ further help confirm that a trapped session is behaving maliciously.
 
 ### With strong isolation and network segmentation
 
-Oubliette's fourth risk — imperfect containment — is mitigated by treating the
+Oubliette's fourth risk, the imperfect containment,  is mitigated by treating the
 shadow VM as a hostile zone and applying rigorous network segmentation around
 it. The deception buys time and intelligence; the surrounding isolation
 architecture ensures that a contained attacker, even one who detects the trap,
