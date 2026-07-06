@@ -7,7 +7,7 @@
 # guest. If the script is not present there, restore fails and the migrated
 # tree dies. Staging it on both sides closes that coherence gap.
 #
-# Target path is /root/linpeas.sh, matching a root shell whose cwd is /root
+# Target path is /tmp/linpeas.sh
 # (what the broker spawns, and what the manual test below uses).
 
 set -euo pipefail
@@ -15,7 +15,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
 
 SRC="${LINPEAS_SRC:-${REPO}/tests/linpeas.sh}"
-DEST="/root/linpeas.sh"
+DEST="/tmp/linpeas.sh"
 
 if [[ ! -f "${SRC}" ]]; then
   echo "linpeas not found at ${SRC}; download it into tests/ first." >&2

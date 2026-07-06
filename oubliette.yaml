@@ -7,6 +7,12 @@ criu_path: /usr/sbin/criu
 # Created automatically if it does not exist. Default: /tmp/oubliette-dump.
 local_dump_dir: /tmp/oubliette-dump
 
+# ghost_limit: --ghost-limit for criu dump, in bytes -- the largest
+# deleted-but-still-open file CRIU will snapshot into the image. Raised above
+# CRIU's ~1 MiB built-in cap because recon scripts hold larger unlinked temp
+# files, which would otherwise abort the dump. Default: 10485760 (10 MiB).
+ghost_limit: 10485760
+
 vm:
   # shared_dir_host: host-side path to the virtiofs share root mounted inside
   # the falltrap-debian guest (FT_SHARED_DIR in vm/debian/falltrap-env.sh).
@@ -25,3 +31,35 @@ vm:
   # absolute path: the preflight check runs `test -x` over the guest agent,
   # which does not perform a $PATH search on its argument.
   remote_criu_path: /usr/sbin/criu
+
+# gate: the coherence gate -- the pre-dump search for an instant at which the
+# target tree holds no resource CRIU could not restore in the guest (an fd into
+# /proc or /sys, an external socket). It freezes the tree in a cgroup v2 freezer,
+# inspects every member's fds, and only dumps when the snapshot is clean; a
+# fork-heavy script is otherwise rarely dumpable at an arbitrary instant.
+gate:
+  # disabled: turn the gate off and dump at whatever instant the trap fires
+  # (the original behavior). Default: false (the gate is on).
+  disabled: false
+
+  # cgroup_root: cgroup v2 directory under which oubliette creates a per-session
+  # freezer cgroup. Must be writable by the user running oubliette (root in
+  # production). Default: /sys/fs/cgroup.
+  cgroup_root: /sys/fs/cgroup
+
+  # max_attempts: freeze/inspect cycles spent looking for a coherent instant per
+  # dump. 0 uses the built-in default (100).
+  max_attempts: 0
+
+  # backoff_ms: how long the tree runs, thawed, between attempts. 0 uses the
+  # built-in default (10 ms).
+  backoff_ms: 0
+
+  # dump_retries: how many times a dump that loses the thaw/seize race is
+  # re-gated before failing. Default: 3.
+  dump_retries: 3
+
+  # adopt_freeze: dump the still-frozen tree via criu --freeze-cgroup instead of
+  # thawing first, eliminating the residual race -- but requires a CRIU whose
+  # cgroup-v2 freeze adoption is verified against the guest. Default: false.
+  adopt_freeze: false

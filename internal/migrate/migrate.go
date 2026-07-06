@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/oubliette/oubliette/internal/coherence"
 	"github.com/oubliette/oubliette/internal/config"
 	"github.com/oubliette/oubliette/internal/criu"
 	"github.com/oubliette/oubliette/internal/preflight"
@@ -57,12 +58,31 @@ const restoreHelperDialInterval = 500 * time.Millisecond
 // and returns a connected AF_VSOCK channel to the restored session's pty in the
 // guest. The caller owns the returned connection and must close it.
 //
+// It acquires a fresh freezer cgroup, moves the tree into it, and (unless the
+// gate is disabled) checkpoints only once the tree is at a coherent instant.
+// Callers that already own the tree's cgroup — the broker, which spawns the
+// shell into one at birth — should use MigrateInCgroup instead.
+//
 // The source tree is killed once the guest-side restore is confirmed. Any
 // failure before the CRIU dump leaves the source untouched. criu dump captures
 // the whole subtree of pid, so a shell plus its running children migrate
 // together.
 func Migrate(ctx context.Context, pid int, vmName string, cfg *config.Config) (*vsock.Conn, error) {
-	slog.InfoContext(ctx, "starting migration", "pid", pid, "vm", vmName)
+	return migrateTree(ctx, nil, pid, vmName, cfg)
+}
+
+// MigrateInCgroup is like Migrate but uses cg, an already-populated freezer
+// cgroup holding the tree rooted at pid. The caller retains ownership of cg and
+// is responsible for closing it after this returns.
+func MigrateInCgroup(ctx context.Context, cg *coherence.Cgroup, pid int, vmName string, cfg *config.Config) (*vsock.Conn, error) {
+	return migrateTree(ctx, cg, pid, vmName, cfg)
+}
+
+// migrateTree is the shared migration body. cg, when non-nil, is a caller-owned
+// freezer cgroup already holding the tree; when nil and the gate is enabled,
+// migrateTree creates and populates one, and closes it before returning.
+func migrateTree(ctx context.Context, cg *coherence.Cgroup, pid int, vmName string, cfg *config.Config) (*vsock.Conn, error) {
+	slog.InfoContext(ctx, "starting migration", "pid", pid, "vm", vmName, "gate", !cfg.Gate.Disabled)
 
 	if _, err := vm.LookupDomain(ctx, vmName); err != nil {
 		return nil, fmt.Errorf("vm lookup: %w", err)
@@ -82,20 +102,28 @@ func Migrate(ctx context.Context, pid int, vmName string, cfg *config.Config) (*
 	}
 	slog.InfoContext(ctx, "preflight passed")
 
-	// Start from an empty dump dir: images from a previous migration must not
-	// contaminate this one. A stale remap-fpath.img or *.ghost that this dump
-	// does not overwrite would be read by criu restore and fail it (e.g.
-	// "Remap for non existing file").
-	if err := os.RemoveAll(cfg.LocalDumpDir); err != nil {
-		return nil, fmt.Errorf("clear local dump dir: %w", err)
-	}
-	if err := os.MkdirAll(cfg.LocalDumpDir, 0700); err != nil {
-		return nil, fmt.Errorf("create local dump dir: %w", err)
-	}
+	dumper := &criu.Dumper{CRIUPath: cfg.CRIUPath, GhostLimit: cfg.GhostLimit, FileLocks: true}
 
-	dumper := &criu.Dumper{CRIUPath: cfg.CRIUPath}
-	if err := dumper.Dump(ctx, pid, cfg.LocalDumpDir); err != nil {
-		return nil, fmt.Errorf("criu dump: %w", err)
+	if cfg.Gate.Disabled {
+		// Legacy path: dump at whatever instant the trap fired.
+		if err := resetDir(cfg.LocalDumpDir); err != nil {
+			return nil, err
+		}
+		if err := dumper.Dump(ctx, pid, cfg.LocalDumpDir); err != nil {
+			return nil, fmt.Errorf("criu dump: %w", err)
+		}
+	} else {
+		if cg == nil {
+			owned, err := acquireCgroup(ctx, pid, cfg.Gate)
+			if err != nil {
+				return nil, fmt.Errorf("acquire cgroup: %w", err)
+			}
+			defer owned.Close()
+			cg = owned
+		}
+		if err := gatedDump(ctx, cg, pid, dumper, cfg.LocalDumpDir, cfg.Gate); err != nil {
+			return nil, err
+		}
 	}
 	slog.InfoContext(ctx, "process tree dumped", "dir", cfg.LocalDumpDir)
 
@@ -137,6 +165,92 @@ func Migrate(ctx context.Context, pid int, vmName string, cfg *config.Config) (*
 	}
 
 	return conn, nil
+}
+
+// procRoot is the procfs mount the coherence gate reads process state from.
+const procRoot = "/proc"
+
+// defaultDumpRetries bounds how many times gatedDump re-gates after a dump that
+// lost the thaw/seize race, when the config does not specify.
+const defaultDumpRetries = 3
+
+// acquireCgroup creates a fresh freezer cgroup and moves the tree rooted at pid
+// into it. The name mimics a systemd session scope so a process inspecting
+// /proc/self/cgroup sees nothing that identifies the trap.
+func acquireCgroup(ctx context.Context, pid int, gate config.GateConfig) (*coherence.Cgroup, error) {
+	if gate.CgroupRoot == "" {
+		return nil, fmt.Errorf("gate cgroup_root is empty")
+	}
+	cg, err := coherence.NewCgroup(gate.CgroupRoot, coherence.SessionScopeName())
+	if err != nil {
+		return nil, err
+	}
+	if err := coherence.Populate(ctx, cg, procRoot, pid); err != nil {
+		_ = cg.Close()
+		return nil, fmt.Errorf("populate cgroup: %w", err)
+	}
+	return cg, nil
+}
+
+// gatedDump checkpoints the tree in cg only at an instant the coherence gate
+// judges restorable, retrying if a dump nonetheless fails on the residual
+// thaw/seize race. On success criu has checkpointed and killed the tree, leaving
+// cg empty. On failure the tree is left running.
+func gatedDump(ctx context.Context, cg *coherence.Cgroup, pid int, dumper *criu.Dumper, dumpDir string, gate config.GateConfig) error {
+	retries := gate.DumpRetries
+	if retries <= 0 {
+		retries = defaultDumpRetries
+	}
+	gateCfg := coherence.GateConfig{
+		MaxAttempts: gate.MaxAttempts,
+		Backoff:     time.Duration(gate.BackoffMS) * time.Millisecond,
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= retries+1; attempt++ {
+		// WaitForCoherentInstant returns with the tree frozen at a coherent instant.
+		snap, err := coherence.WaitForCoherentInstant(ctx, cg, procRoot, gateCfg)
+		if err != nil {
+			return fmt.Errorf("coherence gate: %w", err)
+		}
+		slog.InfoContext(ctx, "coherent instant found; checkpointing",
+			"tree_size", len(snap.PIDs), "attempt", attempt)
+
+		if err := resetDir(dumpDir); err != nil {
+			_ = cg.Thaw(ctx)
+			return err
+		}
+		if gate.AdoptFreeze {
+			dumper.FreezeCgroup = cg.Path() // dump the still-frozen tree (no race)
+		} else {
+			dumper.FreezeCgroup = ""
+			if err := cg.Thaw(ctx); err != nil { // let criu re-seize the thawed tree
+				return fmt.Errorf("thaw before dump: %w", err)
+			}
+		}
+
+		if err := dumper.Dump(ctx, pid, dumpDir); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			slog.WarnContext(ctx, "dump failed at gated instant; re-gating", "attempt", attempt, "err", err)
+			_ = cg.Thaw(ctx) // AdoptFreeze leaves it frozen on failure; ensure it runs before re-gating
+		}
+	}
+	return fmt.Errorf("gated dump failed after %d attempt(s): %w", retries+1, lastErr)
+}
+
+// resetDir empties dumpDir (or creates it), so stale images from a previous
+// migration cannot contaminate this one — a leftover remap-fpath.img or *.ghost
+// would otherwise be read by criu restore and fail it.
+func resetDir(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("clear dump dir: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create dump dir: %w", err)
+	}
+	return nil
 }
 
 // Run migrates pid into vmName and bridges the restored session to this

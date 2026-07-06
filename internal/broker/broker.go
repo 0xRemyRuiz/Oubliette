@@ -31,11 +31,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/oubliette/oubliette/internal/coherence"
 	"github.com/oubliette/oubliette/internal/config"
 	"github.com/oubliette/oubliette/internal/control"
 	"github.com/oubliette/oubliette/internal/migrate"
 	"github.com/oubliette/oubliette/internal/pty"
 	"github.com/oubliette/oubliette/internal/ptymux"
+	"github.com/oubliette/oubliette/internal/vsock"
 )
 
 // readBufSize bounds a single read from the client connection.
@@ -212,6 +214,33 @@ func (b *Broker) handleConn(ctx context.Context, conn net.Conn) error {
 	}
 	defer master.Close()
 
+	// New session with the pty slave as controlling terminal, so the shell is a
+	// proper session/job-control leader -- and so criu --shell-job has a tty to
+	// checkpoint.
+	proc := &syscall.SysProcAttr{Setsid: true, Setctty: true}
+
+	// Unless the gate is disabled, spawn the shell straight into a per-session
+	// freezer cgroup (clone3 CLONE_INTO_CGROUP), so the whole session tree is
+	// captured from birth with no window in which a child escapes it -- and the
+	// coherence gate has that exact tree to freeze and inspect. The cgroup is
+	// named like a systemd session scope so a process reading /proc/self/cgroup
+	// sees nothing that identifies the trap.
+	var cg *coherence.Cgroup
+	if !b.cfg.Migration.Gate.Disabled {
+		c, err := coherence.NewCgroup(b.cfg.Migration.Gate.CgroupRoot, coherence.SessionScopeName())
+		if err != nil {
+			return fmt.Errorf("create session cgroup: %w", err)
+		}
+		defer func() {
+			if cerr := c.Close(); cerr != nil {
+				slog.WarnContext(ctx, "session cgroup cleanup", "remote", remote, "err", cerr)
+			}
+		}()
+		cg = c
+		proc.UseCgroupFD = true
+		proc.CgroupFD = c.FD()
+	}
+
 	cmd := exec.Command(b.cfg.Shell)
 	cmd.Stdin = slave
 	cmd.Stdout = slave
@@ -220,10 +249,7 @@ func (b *Broker) handleConn(ctx context.Context, conn net.Conn) error {
 	// Run from a directory that also exists in the guest, so the migrated
 	// shell's cwd stays coherent (preflight requires the cwd to exist there).
 	cmd.Dir = "/root"
-	// New session with the pty slave as controlling terminal, so the shell is a
-	// proper session/job-control leader -- and so criu --shell-job has a tty to
-	// checkpoint.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	cmd.SysProcAttr = proc
 	if err := cmd.Start(); err != nil {
 		slave.Close()
 		return fmt.Errorf("start shell %s: %w", b.cfg.Shell, err)
@@ -251,8 +277,15 @@ func (b *Broker) handleConn(ctx context.Context, conn net.Conn) error {
 	// so the post-migration relay can read the client again.
 	_ = conn.SetReadDeadline(time.Time{})
 
-	// Phase 2: migrate the shell's process tree into the shadow VM.
-	guestConn, err := migrate.Migrate(ctx, shellPID, b.cfg.VMName, b.cfg.Migration)
+	// Phase 2: migrate the shell's process tree into the shadow VM. When the
+	// session was born into a freezer cgroup, hand it to migrate so the gate
+	// works on that exact, birth-captured tree instead of re-adopting one.
+	var guestConn *vsock.Conn
+	if cg != nil {
+		guestConn, err = migrate.MigrateInCgroup(ctx, cg, shellPID, b.cfg.VMName, b.cfg.Migration)
+	} else {
+		guestConn, err = migrate.Migrate(ctx, shellPID, b.cfg.VMName, b.cfg.Migration)
+	}
 	if err != nil {
 		return fmt.Errorf("migrate shell tree: %w", err)
 	}

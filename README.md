@@ -61,6 +61,10 @@ criu_path: /usr/sbin/criu
 # Created automatically if it does not exist. Default: /tmp/oubliette-dump.
 local_dump_dir: /var/run/oubliette/dump
 
+# ghost_limit: --ghost-limit for criu dump, in bytes (largest deleted-but-open
+# file CRIU snapshots into the image). Default: 10485760 (10 MiB).
+ghost_limit: 10485760
+
 vm:
   # ssh_user: SSH login username on the guest. Required.
   ssh_user: root
@@ -77,7 +81,35 @@ vm:
 
   # remote_criu_path: path to the criu binary inside the guest. Default: "criu".
   remote_criu_path: /usr/sbin/criu
+
+# gate: the coherence gate (see below). Omit the whole block to accept defaults.
+gate:
+  disabled: false        # true = dump at the trap instant (original behavior)
+  cgroup_root: /sys/fs/cgroup  # where per-session freezer cgroups are created
+  max_attempts: 0        # freeze/inspect cycles per dump (0 = default 100)
+  backoff_ms: 0          # thawed dwell between attempts (0 = default 10 ms)
+  dump_retries: 3        # re-gates after a dump that loses the thaw/seize race
+  adopt_freeze: false    # true = dump the frozen tree via criu --freeze-cgroup
 ```
+
+### The coherence gate
+
+Migrating a process tree mid-script only succeeds if, at the dump instant, every
+open fd in the tree points at something CRIU can reproduce inside the guest. A
+fork-heavy script transiently holds host-coupled fds (into `/proc`, `/sys`) that
+cannot be. The gate spawns the session into a **cgroup v2 freezer**, and before
+each dump it freezes the tree, inspects every member's fds, and dumps only when
+the snapshot is clean — otherwise it thaws, waits `backoff_ms`, and retries up to
+`max_attempts`. A failed search is non-destructive: the tree is thawed and runs
+on. This turns "dump at an arbitrary, usually-doomed instant" into "dump at one
+of the frequent windows where the tree is coherently checkpointable."
+
+By default the tree is thawed just before `criu dump` re-seizes it, leaving a
+sub-millisecond race in which a blocker could reappear; a dump that hits one
+fails non-destructively and is re-gated (`dump_retries`). Setting `adopt_freeze:
+true` closes that race by dumping the still-frozen tree via `criu
+--freeze-cgroup`, but depends on the guest CRIU's cgroup-v2 freeze adoption —
+enable it once verified against your CRIU build.
 
 ## Development and testing VMs (`vm/debian/`)
 
