@@ -1,22 +1,70 @@
-Make sure qemu has the right permissions (WRONG)
-------------------------------------------------
- - setfacl -R -m u:libvirt-qemu:rwx $(pwd)
- - setfacl -R -d -m u:libvirt-qemu:rwx $(pwd)
- - sudo chown $(whoami):$(whoami) -R $(pwd)
+# Various notes
 
-At one point my image wasn't loading from the internet anymore so I changed it and complained about it to claude. It did some serious checking tasks, again and again, said to me I got the wrong config and changed it. I've got another problem about having the rights to build the oubliette command from the L1 vm. It did a lot of half useful checking tasks to final tell me "hm, it's an ACL problem obviously" and proposed me to setup ACLs. It worked but now I was having trouble getting qemu to enlist my L2 vm to the network. It worked again heavily to produce fixes on fixes without the situation improving at all. It was starting to spiral to infinity. 50k tokens later, turns out the best fix was to build my command a folder above and voila ! Think with the AI, don't make it think for you...
+## AI going wrong
+### AI thought I had to make sure qemu has the right permissions
+ - `setfacl -R -m u:libvirt-qemu:rwx $(pwd)`
+ - `setfacl -R -d -m u:libvirt-qemu:rwx $(pwd)`
+ - `sudo chown $(whoami):$(whoami) -R $(pwd)`
+At one point my image wasn't loading from the internet anymore so I changed it and complained about it to claude. It did some serious checking tasks, again and again, said to me I got the wrong config and changed it. I've got another problem about having the rights to build the oubliette command from the L1 vm. It did a lot of half useful checking tasks to final tell me "hm, it's an ACL problem obviously" and proposed me to setup ACLs. It worked but now I was having trouble getting qemu to enlist my L2 vm to the network. It worked again heavily to produce fixes on fixes without the situation improving at all. It was starting to spiral to infinity. 50k tokens later, turns out the best fix was to build my command a folder above and voila! Think with the AI, don't make it think for you...
 
-Profile of the machine
-----------------------
+### AI had 5min reflexion and modified code but...
+A simple fix of the fifo was fine but...ai decided it had to rework something not knowning past history.
+`./src/vm/debian/shell.sh -- 'sudo -u falltrap sh -c "rm -f /run/user/1000/fish_universal_variables.notifier; mkfifo -m 600 /run/user/1000/fish_universal_variables.notifier"'`
+
+## Test suites
+`gofmt -l internal/ cmd/                 # expect no output
+go vet ./...
+go test ./...                            # whole suite
+go test -race -v ./internal/coherence/   # watch the 4 live tests run for real`
+
+## Profile of the machine
 My impression is that the machine should be a medium to low critical asset. It is not designed for critical assets since we cannot warranty for sure the integrity of the machine. First because we let the attacker run commands before trapping him. Second because we cannot be sure (and cannot approach the certainty of a behavior based analysis) that we detect the wrongful action. Third because we cannot be sure we get only attackers. Fourth because we cannot be 100% sure the attacker stays in the trap dungeon.
 
-Notions to look about
----------------------
+## Notions to look about
  - login linger
  - 9p (this is the shared mechanism used to sync data from host with devhost)
 
-Plan to switch from stealing the process to seemless falling generated
-----------------------------------------------------------------------
+## What Attackers Actually Check
+This comes from MITRE ATT&CK's Discovery tactics, post-exploitation toolkits (LinPEAS, LinEnum, pspy), and red-team writeups. The order is roughly what an attacker runs in their first few minutes:
+
+### Tier 1 — instant tells (first 30 seconds)
+ - `uname -a, /etc/os-release, /proc/version — kernel + distro`
+ - `whoami, id, hostname`
+ - `ls -la ~, cat ~/.bash_history`
+ - `w, last, lastlog — who else is here, who logged in recently`
+ - `ps auxf — what's running`
+ - `df -h, mount — where am I`
+ - `ip a, ip r, cat /etc/resolv.conf`
+
+### Tier 2 — the "is this a honeypot" sniff test (first 5 minutes)
+ - `ls -la /home/ — multiple users? realistic mtimes?`
+ - `cat /etc/passwd, /etc/group, /etc/shadow (if root)`
+ - `crontab -l, ls /etc/cron*`
+ - `cat /etc/sudoers, /etc/sudoers.d/`
+ - `ls /var/log/ — log sizes, ages, gaps`
+ - `find / -name "*.sh" -mtime -30 — recent activity`
+ - `dmesg | head — boot messages, hardware fingerprint`
+ - `systemctl list-units --type=service`
+
+### Tier 3 — the "what's valuable here" pass (next 15 minutes)
+ - `~/.ssh/ — keys, known_hosts, config`
+ - `~/.aws/, ~/.config/gcloud/, .kube/config`
+ - `.git-credentials, .npmrc, .pypirc`
+ - `/var/www/, /opt/, /srv/ — apps and configs`
+ - `find / -name "*.conf" 2>/dev/null | xargs grep -l "password"`
+ - `Browser history, mail spools if it's a workstation`
+ - `history of every user readable`
+
+### Tier 4 — the deliberate fingerprinting (skilled attacker only)
+ - `dmidecode — VM detection (QEMU, VMware, VirtualBox strings)`
+ - `/sys/class/dmi/id/product_name`
+ - `Timing attacks (rdtsc jitter, scheduler granularity)`
+ - `lscpu — CPU flags that reveal hypervisor`
+ - `cat /proc/cpuinfo | grep hypervisor`
+
+This Tier 4 stuff is where KVM betrays you by default. Mitigating it is its own discipline (-cpu host,kvm=off,hv_vendor_id=..., hiding the hypervisor flag).
+
+## Plan to switch from stealing the process to seemless falling generated
  1. Capture the target's terminal before touching it (internal/migrate)
 	- targetTTY(pid) (string, error): readlink /proc/<pid>/fd/0, require it matches /dev/pts/*. If not → abort with a clear error ("target PID has no controlling terminal; oubliette migrates interactive tty sessions"). Runs in preflight, before the dump, so we fail early.
  2. Bridge to the target's pts, not oubliette's stdin/stdout (internal/migrate)
@@ -35,8 +83,66 @@ Files: internal/migrate/migrate.go (capture tty, open pts, poll loop, use Relay)
 One trade-off to flag: I'm folding winsize into the existing connection via light framing (every pty byte now passes through frame encode/decode). The alternative is a second vsock control connection that leaves tched and carries only fixed 4-byte winsize messages. The framedapproach is cleaner (one connection, no dual-teardown edge cases); the two-connection approach is lower-risk to the data path that just started working. I
 lean framed and will cover it with tests — but say the word ifath raw.
 
-Base for prez
--------------
+## After admiting the base scenario will not hold up
+Suricata doesn't seem to trigger nicely, it seems at best a bit random, let's put it aside. Coming back to the linpeas script. You promised me seamless continuation mid script falltrap mechanism! You assured me it could be possible and now you confirm this isn't? I thought CRIU could do that and you switched to some proxy/broker strategy which would probably never been compatible with our base goal. Find a solution and then we'll get back to suricata.
+
+You're right to call this out, and I owe you a straight answer. I was inconsistent: I told you the linPEAS scenario was sound, then in "problem 2" I got defeatist and declared mid-run migration "fragile/hard" — that was me over-reacting to a test failure, not a real limitation. Let me correct the record honestly.
+
+The technical truth
+
+- CRIU absolutely can checkpoint and restore a running process tree — a shell plus a live linPEAS plus its find/grep children, pipes and all. That's CRIU's core competency, not an edge it can't handle. When we migrate --pid <shell>, the dumper already checkpoints the whole subtree — linPEAS included.
+- The broker did not replace CRIU or compromise the goal. The broker only owns the client connection so it survives the swap. The actual migration underneath is the same CRIU tree checkpoint/restore. They're orthogonal — the broker can't and doesn't prevent mid-run tree migration.
+- Why it "died" in our tests is coherence, not impossibility. When a shell is running linpeas.sh, it holds the script file open — so restore needs /root/linpeas.sh present in the guest at the same path. It isn't there → restore fails → the tree dies. That's the exact same class of problem we already beat for fish (binary, locale, FIFO): fix the coherence gap and it works. I conflated "our guest wasn't coherent yet" with "CRIU can't do this." My mistake.
+
+So: seamless mid-run continuation is the goal, it's achievable, and the path is the coherence loop we already know — applied to the linPEAS tree.
+
+The plan, isolated from broker/Suricata noise
+
+Let's prove the core directly with migrate --pid (no broker, no Suricata), then the broker just re-bridges on top. Step one is staging the script so it's coherent:
+
+● Write(vm/debian/stage-linpeas.sh)
+Wrote 34 lines to vm/debian/stage-linpeas.sh
+#!/usr/bin/env bash
+#- Stage tests/linpeas.sh at an identical path on both this host and the shadow
+#- VM, so a shell running it can be migrated mid-run.
+#-
+#- Why: a shell executing a script keeps the script file open and reads commands
+#- from it. CRIU dumps that open fd; restore reopens it at the same path in the
+#- guest. If the script is not present there, restore fails and the migrated
+#- tree dies. Staging it on both sides closes that coherence gap.
+#-
+#- Target path is /root/linpeas.sh, matching a root shell whose cwd is /root
+… +24 lines
+
+  Ran 1 shell command
+
+Now the isolated core test — migrate --pid on a shell running linPEAS, no broker/Suricata in the way:
+
+1. Stage the script both sides:
+! sudo ./vm/debian/stage-linpeas.sh
+
+2. Terminal A — run linPEAS in a root shell (C locale, so no locale-mmap coherence issue for the whole tree):
+sudo env LC_ALL=C HOME=/root bash
+then inside that shell:
+echo $$        # note this PID — the shell to migrate
+cd /root
+./linpeas.sh
+Let it stream for a few seconds (early = fewer children = smallest coherence surface for the first attempt).
+
+3. Terminal B — migrate it mid-run:
+sudo ../oubliette migrate --pid <PID_from_step_2> --vm falltrap-debian
+
+What success looks like: Terminal A's shell dies; Terminal B shows linPEAS continuing its output — now enumerating the guest. That's the seamless mid-run continuation, proven on the core engine.
+
+When it fails (likely, first try — same as fish did), grab the guest reason:
+! cat /home/falltrap/.local/share/falltrap/shared/oubliette-dump/restore.log | tail -30
+and paste it. We fix each coherence gap exactly like we did for fish — binary, locale, FIFO were three rounds; the linPEAS tree may add a couple (a temp file a child holds, a fd to something not mirrored). Each one is a specific, nameable fix, not a wall.
+
+Honest expectation-setting so I don't over-promise again: I'm confident this is achievable because it's the same coherence loop, but I can't promise it's one round — a tree of dozens of processes has more surface than a single fish. What I can promise: every failure will name a concrete file/fd in restore.log, and each is fixable. If we hit something genuinely CRIU-can't-do (e.g. a child wedged in uninterruptible I/O at dump time), I'll tell you plainly rather than hand-wave.
+
+Run steps 1–3 and send me the restore.log tail from the first failure. Let's grind the coherence down until linPEAS falls through the trapdoor mid-run.
+
+## Base for prez
 I need a sobre presentation like a technical talk, something like in DEFCON talks or other tech talks. I will be presenting a research project using agentic working. My research project is some sort of a falltrap mechanism in linux. It is not to replace honyepot but to complement those.
 
 Oubliette

@@ -61,6 +61,10 @@ criu_path: /usr/sbin/criu
 # Created automatically if it does not exist. Default: /tmp/oubliette-dump.
 local_dump_dir: /var/run/oubliette/dump
 
+# ghost_limit: --ghost-limit for criu dump, in bytes (largest deleted-but-open
+# file CRIU snapshots into the image). Default: 10485760 (10 MiB).
+ghost_limit: 10485760
+
 vm:
   # ssh_user: SSH login username on the guest. Required.
   ssh_user: root
@@ -77,7 +81,35 @@ vm:
 
   # remote_criu_path: path to the criu binary inside the guest. Default: "criu".
   remote_criu_path: /usr/sbin/criu
+
+# gate: the coherence gate (see below). Omit the whole block to accept defaults.
+gate:
+  disabled: false        # true = dump at the trap instant (original behavior)
+  cgroup_root: /sys/fs/cgroup  # where per-session freezer cgroups are created
+  max_attempts: 0        # freeze/inspect cycles per dump (0 = default 100)
+  backoff_ms: 0          # thawed dwell between attempts (0 = default 10 ms)
+  dump_retries: 3        # re-gates after a dump that loses the thaw/seize race
+  adopt_freeze: false    # true = dump the frozen tree via criu --freeze-cgroup
 ```
+
+### The coherence gate
+
+Migrating a process tree mid-script only succeeds if, at the dump instant, every
+open fd in the tree points at something CRIU can reproduce inside the guest. A
+fork-heavy script transiently holds host-coupled fds (into `/proc`, `/sys`) that
+cannot be. The gate spawns the session into a **cgroup v2 freezer**, and before
+each dump it freezes the tree, inspects every member's fds, and dumps only when
+the snapshot is clean — otherwise it thaws, waits `backoff_ms`, and retries up to
+`max_attempts`. A failed search is non-destructive: the tree is thawed and runs
+on. This turns "dump at an arbitrary, usually-doomed instant" into "dump at one
+of the frequent windows where the tree is coherently checkpointable."
+
+By default the tree is thawed just before `criu dump` re-seizes it, leaving a
+sub-millisecond race in which a blocker could reappear; a dump that hits one
+fails non-destructively and is re-gated (`dump_retries`). Setting `adopt_freeze:
+true` closes that race by dumping the still-frozen tree via `criu
+--freeze-cgroup`, but depends on the guest CRIU's cgroup-v2 freeze adoption —
+enable it once verified against your CRIU build.
 
 ## Development and testing VMs (`vm/debian/`)
 
@@ -213,9 +245,29 @@ these.
 
 ## Known limitations (v0.0.1)
 
-- No PTY/terminal handoff. The restored process's stdio is detached inside the
-  guest; interactive shells need manual PTY re-attachment after migration.
-- Paths passed via config must not contain spaces or shell metacharacters.
-- Network connections open at dump time are not re-established in the guest
+ - Paths passed via config must not contain spaces or shell metacharacters.
+ - Network connections open at dump time are not re-established in the guest
   (CRIU can restore TCP connections but this is not yet wired up).
-- Only the first IPv4 address from `virsh domifaddr` is used.
+ - Only the first IPv4 address from `virsh domifaddr` is used.
+
+
+## Flow to test the process
+### Base common setup
+ 1. Start the devhost machine : `./vm/debian/devhost/create.sh && ./vm/debian/devhost/start.sh`
+ 2. Start the guest machine : `./vm/debian/devhost/shell.sh -- ./src/vm/debian/create.sh && ./src/vm/debian/start.sh`
+ 3. Run process A in terminal A : `./vm/debian/devhost/shell.sh`
+### Simple flow with in-band one word test scanner
+ 4. From terminal A build and run oubliette : `cd src && ./build.sh && sudo ../oubliette serve --listen :2222 --shell /bin/bash --trigger whoami`
+ 5. Run process B in terminal B : `./vm/debian/devhost/shell.sh`
+ 6. From terminal B start the command line : `nc localhost 2222`
+ 7. From terminal B check we are in host : `ls oubliette_status.txt`
+ 8. From terminal B just run `whoami`
+ 9. From terminal B check we are now in guest : `ls oubliette_status.txt`
+### Flow adding external trigger for the falltrap mechanism
+ 4. From terminal A build and run oubliette : `cd src && ./build.sh && sudo ../oubliette serve --listen :2222 --shell /bin/bash --trigger __never__`
+ 5. Run process B in terminal B : `./vm/debian/devhost/shell.sh`
+ 6. Run process C in terminal C : `./vm/debian/devhost/shell.sh`
+ 6. From terminal B start the command line : `nc localhost 2222`
+ 7. From terminal B check we are in host : `ls oubliette_status.txt`
+ 7. From terminal C trigger the falltrap : `echo '{"action":"contain","match":{"remote_ip":"::1","remote_port":[TARGET_PORT]}}' | sudo socat - UNIX-CONNECT:/run/oubliette.sock`
+ 7. From terminal B check we are in host : `ls oubliette_status.txt`

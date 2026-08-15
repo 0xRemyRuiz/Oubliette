@@ -28,6 +28,10 @@ func TestLoad_defaults(t *testing.T) {
 		{"SharedDirGuest", cfg.VM.SharedDirGuest, "/mnt/falltrap-shared"},
 		{"RemoteCRIUPath", cfg.VM.RemoteCRIUPath, "/usr/sbin/criu"},
 		{"RemoteDumpDir", cfg.VM.RemoteDumpDir, "oubliette-dump"},
+		{"GhostLimit", cfg.GhostLimit, int64(10 << 20)},
+		{"GateDisabled", cfg.Gate.Disabled, false},
+		{"GateCgroupRoot", cfg.Gate.CgroupRoot, "/sys/fs/cgroup"},
+		{"GateDumpRetries", cfg.Gate.DumpRetries, 3},
 	}
 	for _, tc := range tests {
 		if tc.got != tc.want {

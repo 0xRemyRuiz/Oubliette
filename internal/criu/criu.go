@@ -24,6 +24,21 @@ var (
 type Dumper struct {
 	// CRIUPath is the absolute or PATH-relative location of the criu binary.
 	CRIUPath string
+	// GhostLimit, when > 0, sets --ghost-limit: the maximum size in bytes of a
+	// deleted-but-still-open file that CRIU snapshots into the image (a "ghost
+	// file"). CRIU's built-in cap (historically ~1 MiB) fails the whole dump the
+	// moment any process in the tree holds a larger unlinked file — something
+	// fork-heavy recon scripts do routinely via temp files. Raising it trades
+	// image size for not aborting. Zero leaves CRIU's default in place.
+	GhostLimit int64
+	// FileLocks requests --file-locks, so fcntl/flock locks held anywhere in the
+	// tree are checkpointed (and restored) instead of causing the dump to bail.
+	FileLocks bool
+	// FreezeCgroup, when non-empty, is the path of a cgroup freezer that already
+	// holds the target tree frozen. Passing it as --freeze-cgroup makes CRIU
+	// adopt that existing freeze rather than ptrace-seizing the tree itself, so
+	// the tree is dumped at the exact instant the coherence gate inspected it.
+	FreezeCgroup string
 }
 
 // Dump checkpoints process pid into dir using criu dump.
@@ -34,18 +49,33 @@ func (d *Dumper) Dump(ctx context.Context, pid int, dir string) error {
 	if _, err := exec.LookPath(d.CRIUPath); err != nil {
 		return fmt.Errorf("%w: %s", ErrCRIUNotFound, d.CRIUPath)
 	}
+	out, err := runSubprocess(ctx, d.CRIUPath, d.dumpArgs(pid, dir)...)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrDumpFailed, out)
+	}
+	return nil
+}
+
+// dumpArgs builds the criu dump argument vector for pid into dir, appending any
+// optional hardening flags configured on d. It is split out from Dump so the
+// exact invocation can be unit-tested without a criu binary present.
+func (d *Dumper) dumpArgs(pid int, dir string) []string {
 	args := []string{
 		"dump",
 		"-t", strconv.Itoa(pid),
 		"-D", dir,
 		"--shell-job",
-		"-v4",
 	}
-	out, err := runSubprocess(ctx, d.CRIUPath, args...)
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrDumpFailed, out)
+	if d.GhostLimit > 0 {
+		args = append(args, "--ghost-limit", strconv.FormatInt(d.GhostLimit, 10))
 	}
-	return nil
+	if d.FileLocks {
+		args = append(args, "--file-locks")
+	}
+	if d.FreezeCgroup != "" {
+		args = append(args, "--freeze-cgroup", d.FreezeCgroup)
+	}
+	return append(args, "-v4")
 }
 
 // Restorer performs CRIU restore operations from a checkpoint directory.

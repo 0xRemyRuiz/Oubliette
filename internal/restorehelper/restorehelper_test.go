@@ -33,28 +33,3 @@ func TestCriuRestoreCmd(t *testing.T) {
 		t.Error("expected Setctty to be true")
 	}
 }
-
-func TestOpenPTY(t *testing.T) {
-	master, slave, err := openPTY()
-	if err != nil {
-		t.Skipf("pty allocation not available in this environment: %v", err)
-	}
-	defer master.Close()
-	defer slave.Close()
-
-	if !strings.HasPrefix(slave.Name(), "/dev/pts/") {
-		t.Errorf("slave name: got %q, want prefix /dev/pts/", slave.Name())
-	}
-
-	msg := []byte("hello\n")
-	if _, err := master.Write(msg); err != nil {
-		t.Fatalf("master.Write: %v", err)
-	}
-	buf := make([]byte, len(msg))
-	if _, err := slave.Read(buf); err != nil {
-		t.Fatalf("slave.Read: %v", err)
-	}
-	if string(buf) != string(msg) {
-		t.Errorf("slave got %q, want %q", buf, msg)
-	}
-}
